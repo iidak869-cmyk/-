@@ -145,6 +145,33 @@ var MARK = {
   ANSWER_ID: '__ANSWER_ID__'
 };
 
+// 質問文が長いため、フォームごとに列見出しとして表示する短い名前を指定する（質問IDで指定）。
+// 指定のない質問は、customform.jp上の質問文がそのまま列見出しになる。
+var RENAME_MAP = {
+  241254: { // Cytekiサポート中間アンケート
+    2566947: '①担当者満足度',
+    2620889: '②特によかったサポート内容',
+    2566948: '③現在の不安感',
+    2566954: '④導入して変わりそうと感じている部分',
+    2566950: '⑤業務への役立ち',
+    2566952: '⑥今後のサポートで知りたいこと'
+  },
+  231931: { // 納品後サポートアンケート
+    2455228: '①満足度',
+    2455230: '②活用',
+    2455232: '③記述',
+    2455233: '④紹介',
+    2455234: '⑤記述',
+    2455235: 'その他'
+  }
+};
+
+function getDisplayTitle(formId, questionId, originalTitle) {
+  var map = RENAME_MAP[formId];
+  if (map && map.hasOwnProperty(questionId)) return map[questionId];
+  return originalTitle;
+}
+
 function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   var cookieHeader = auth.cookieHeader;
   var headings = fetchQuestionHeadings(formConf.id, cookieHeader);
@@ -157,8 +184,13 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   var normalHeadings = restHeadings.filter(function (q) { return q.title.indexOf(TRAILING_TITLE_MARKER) === -1; });
   var trailingHeadings = restHeadings.filter(function (q) { return q.title.indexOf(TRAILING_TITLE_MARKER) !== -1; });
 
-  var normalTitles = uniqueTitles(normalHeadings);
-  var trailingTitles = uniqueTitles(trailingHeadings);
+  // marker: 質問文の原文（内部判定専用・不変）／ display: 列見出しに表示する文言（短縮名があれば使う）
+  var normalEntries = uniqueHeadingEntries(normalHeadings, formConf.id);
+  var trailingEntries = uniqueHeadingEntries(trailingHeadings, formConf.id);
+  var normalMarkers = normalEntries.map(function (e) { return e.marker; });
+  var normalDisplays = normalEntries.map(function (e) { return e.display; });
+  var trailingMarkers = trailingEntries.map(function (e) { return e.marker; });
+  var trailingDisplays = trailingEntries.map(function (e) { return e.display; });
 
   var numericQuestionIds = restHeadings
     .filter(function (q) { return q.input_type === 1; })
@@ -170,18 +202,18 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   var sheet = ss.getSheetByName(formConf.sheetName);
   if (!sheet) sheet = ss.insertSheet(formConf.sheetName);
 
-  var headerRow; // 表示テキスト（ユーザーが変更してもよい）
+  var headerRow; // 表示テキスト（短縮名。ユーザーが変更してもよい）
   var markerRow; // 列の役割・質問文の原文（内部判定専用。ノートに保存）
   if (sheet.getLastRow() === 0) {
     headerRow = ['日付', '社名', '担当者']
-      .concat(normalTitles)
+      .concat(normalDisplays)
       .concat(['合計点', '平均'])
-      .concat(trailingTitles)
+      .concat(trailingDisplays)
       .concat(['回答ID']);
     markerRow = [MARK.DATE, MARK.COMPANY, MARK.PERSON]
-      .concat(normalTitles)
+      .concat(normalMarkers)
       .concat([MARK.TOTAL, MARK.AVERAGE])
-      .concat(trailingTitles)
+      .concat(trailingMarkers)
       .concat([MARK.ANSWER_ID]);
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
     setHeaderNotes(sheet, markerRow);
@@ -194,19 +226,19 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
     // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は「回答ID」の手前に追加する
     var normalInsertPos = markerRow.indexOf(MARK.TOTAL);
     if (normalInsertPos === -1) normalInsertPos = headerRow.length;
-    normalTitles.forEach(function (title) {
-      if (markerRow.indexOf(title) === -1) {
-        headerRow.splice(normalInsertPos, 0, title);
-        markerRow.splice(normalInsertPos, 0, title);
+    normalEntries.forEach(function (e) {
+      if (markerRow.indexOf(e.marker) === -1) {
+        headerRow.splice(normalInsertPos, 0, e.display);
+        markerRow.splice(normalInsertPos, 0, e.marker);
         normalInsertPos++;
       }
     });
     var trailingInsertPos = markerRow.indexOf(MARK.ANSWER_ID);
     if (trailingInsertPos === -1) trailingInsertPos = headerRow.length;
-    trailingTitles.forEach(function (title) {
-      if (markerRow.indexOf(title) === -1) {
-        headerRow.splice(trailingInsertPos, 0, title);
-        markerRow.splice(trailingInsertPos, 0, title);
+    trailingEntries.forEach(function (e) {
+      if (markerRow.indexOf(e.marker) === -1) {
+        headerRow.splice(trailingInsertPos, 0, e.display);
+        markerRow.splice(trailingInsertPos, 0, e.marker);
         trailingInsertPos++;
       }
     });
@@ -313,18 +345,19 @@ function setHeaderNotes(sheet, markerRow) {
 }
 
 /**
- * 質問一覧から、表示順を保った重複なしの質問文一覧を作る。
+ * 質問一覧から、表示順を保った重複なしの { marker（質問文の原文）, display（列見出しに表示する文言） }
+ * の一覧を作る。同じ質問文が複数の質問IDに重複登録されている場合は最初の1件だけを使う。
  */
-function uniqueTitles(headings) {
-  var titles = [];
+function uniqueHeadingEntries(headings, formId) {
+  var entries = [];
   var seen = {};
   headings.forEach(function (q) {
     if (!seen[q.title]) {
       seen[q.title] = true;
-      titles.push(q.title);
+      entries.push({ marker: q.title, display: getDisplayTitle(formId, q.question_id, q.title) });
     }
   });
-  return titles;
+  return entries;
 }
 
 /**
