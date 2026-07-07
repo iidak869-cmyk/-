@@ -62,12 +62,13 @@ function syncAll() {
     throw new Error('先に setup() を実行してスプレッドシートを作成してください。');
   }
 
-  var cookieHeader = customformLogin(account, passphrase);
+  var auth = customformLogin(account, passphrase);
+  var deleteAfterSync = props.getProperty('DELETE_AFTER_SYNC') === 'true';
   var ss = SpreadsheetApp.openById(spreadsheetId);
 
   FORMS.forEach(function (formConf) {
     try {
-      var addedCount = syncFormToSheet(ss, formConf, cookieHeader);
+      var addedCount = syncFormToSheet(ss, formConf, auth, deleteAfterSync);
       Logger.log(formConf.name + ': ' + addedCount + ' 件追加');
     } catch (e) {
       Logger.log('【エラー】' + formConf.name + ': ' + e);
@@ -76,7 +77,7 @@ function syncAll() {
 }
 
 /**
- * customform.jp にログインし、以降のAPI/ページ取得に使うCookieヘッダー文字列を返す。
+ * customform.jp にログインし、以降のAPI/ページ取得に使う { cookieHeader, xsrfToken } を返す。
  */
 function customformLogin(account, passphrase) {
   var pre = UrlFetchApp.fetch(BASE_URL + '/signin', { muteHttpExceptions: true });
@@ -107,7 +108,10 @@ function customformLogin(account, passphrase) {
 
   var loginCookies = getCookiesFromResponse(loginRes);
   var mergedCookies = Object.assign({}, preCookies, loginCookies);
-  return buildCookieHeader(mergedCookies);
+  return {
+    cookieHeader: buildCookieHeader(mergedCookies),
+    xsrfToken: decodeURIComponent(mergedCookies['XSRF-TOKEN'])
+  };
 }
 
 // 1回の実行で新規に詳細取得する回答の最大件数（実行時間の上限対策。超えた分は次回実行で続きを取得する）
@@ -130,7 +134,8 @@ var MAX_DETAIL_FETCH_PER_RUN = 200;
 // この文言を含む質問（HPやSNSでの紹介可否など）は合計点・平均よりも後ろの末尾に配置する
 var TRAILING_TITLE_MARKER = 'ホームページ';
 
-function syncFormToSheet(ss, formConf, cookieHeader) {
+function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
+  var cookieHeader = auth.cookieHeader;
   var headings = fetchQuestionHeadings(formConf.id, cookieHeader);
   if (headings.length < 2) return 0;
 
@@ -204,6 +209,7 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
 
   var limited = targets.slice(0, MAX_DETAIL_FETCH_PER_RUN);
   var newRows = [];
+  var syncedMetas = []; // 反映に成功した回答（削除対象）
   limited.forEach(function (meta) {
     var detail = fetchAnswerDetail(formConf.id, meta.answer_id, cookieHeader);
     if (!detail) return;
@@ -240,6 +246,7 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
       return qTitleToValue.hasOwnProperty(col) ? qTitleToValue[col] : '';
     });
     newRows.push(row);
+    syncedMetas.push(meta);
   });
 
   if (newRows.length > 0) {
@@ -249,6 +256,17 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
 
   if (targets.length > limited.length) {
     Logger.log(formConf.name + ': 未取得の回答が残り ' + (targets.length - limited.length) + ' 件あります。次回の自動実行で続きを取り込みます。');
+  }
+
+  // スプレッドシートへの反映が確実に終わった後に、customform.jp側の回答を削除（ゴミ箱へ移動）する
+  if (deleteAfterSync) {
+    syncedMetas.forEach(function (meta) {
+      try {
+        deleteAnswerFromCustomform(formConf.id, meta.answer_id, auth);
+      } catch (e) {
+        Logger.log('【削除エラー】' + formConf.name + ' answer_id=' + meta.answer_id + ': ' + e);
+      }
+    });
   }
 
   return newRows.length;
@@ -281,6 +299,27 @@ function fetchQuestionHeadings(formId, cookieHeader) {
   var json = JSON.parse(res.getContentText());
   if (json.status !== 'OK') return [];
   return json.result.slice().sort(function (a, b) { return a.order_id - b.order_id; });
+}
+
+/**
+ * customform.jp側の回答を削除する（「削除済み回答一覧」に移動するだけで、復元可能）。
+ */
+function deleteAnswerFromCustomform(formId, answerId, auth) {
+  var res = UrlFetchApp.fetch(BASE_URL + '/api/manage/form/answer/remove', {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ customform_id: formId, answer_id: answerId }),
+    headers: {
+      Cookie: auth.cookieHeader,
+      'X-XSRF-TOKEN': auth.xsrfToken,
+      Accept: 'application/json',
+      'X-Requested-With': 'XMLHttpRequest'
+    },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) {
+    throw new Error('削除リクエストが失敗しました（status=' + res.getResponseCode() + '）');
+  }
 }
 
 /**
