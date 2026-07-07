@@ -187,6 +187,8 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
   }
 
   var idColIndex = headerRow.indexOf('回答ID');
+  sheet.hideColumns(idColIndex + 1); // 重複チェック用の内部列なので非表示にする
+
   var existingIds = {};
   var lastRow = sheet.getLastRow();
   if (lastRow > 1) {
