@@ -1,12 +1,11 @@
 # アンケートフォーム自動反映（customform.jp → Googleスプレッドシート）
 
-customform.jp で回答を受け付けている以下の4つのアンケートフォームの回答を、
+customform.jp で回答を受け付けている以下の3つのアンケートフォームの回答を、
 Google Apps Script (GAS) で定期的に取得し、新規作成したGoogleスプレッドシートに自動反映します。
 
 - Cytekiサポート中間アンケート
 - Cytekiサポート最終アンケート
 - 納品後サポートアンケート
-- 納品/公開前アンケート
 
 customform.jp にはWebhookやCSV/API連携機能が無いため、GASが customform.jp にログインして
 回答一覧ページを取得し、解析して反映する方式です。

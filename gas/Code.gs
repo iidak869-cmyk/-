@@ -14,8 +14,7 @@
 var FORMS = [
   { name: 'Cytekiサポート中間アンケート', id: 241254, sheetName: 'Cyteki中間_回答一覧' },
   { name: 'Cytekiサポート最終アンケート', id: 237126, sheetName: 'Cyteki最終_回答一覧' },
-  { name: '納品後サポートアンケート', id: 231931, sheetName: '納品後サポート_回答一覧' },
-  { name: '納品/公開前アンケート', id: 170650, sheetName: '納品公開前_回答一覧' }
+  { name: '納品後サポートアンケート', id: 231931, sheetName: '納品後サポート_回答一覧' }
 ];
 
 var BASE_URL = 'https://customform.jp';
@@ -234,6 +233,24 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
     var lastCol = sheet.getLastColumn();
     headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     markerRow = sheet.getRange(1, 1, 1, lastCol).getNotes()[0];
+
+    // ノート機能の導入前に作られた列（ノートが空）を、表示テキストから推測して補完する。
+    // これにより、過去に作られたシートでも重複列を作らずに済む。
+    var allEntries = normalEntries.concat(trailingEntries);
+    for (var i = 0; i < headerRow.length; i++) {
+      if (markerRow[i]) continue;
+      var text = headerRow[i];
+      if (text === '日付') markerRow[i] = MARK.DATE;
+      else if (text === '社名') markerRow[i] = MARK.COMPANY;
+      else if (text === '担当者') markerRow[i] = MARK.PERSON;
+      else if (text === '合計点') markerRow[i] = MARK.TOTAL;
+      else if (text === '平均') markerRow[i] = MARK.AVERAGE;
+      else if (text === '回答ID') markerRow[i] = MARK.ANSWER_ID;
+      else {
+        var match = allEntries.filter(function (e) { return e.display === text; })[0];
+        if (match) markerRow[i] = match.marker;
+      }
+    }
 
     // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は「回答ID」の手前に追加する
     var normalInsertPos = markerRow.indexOf(MARK.TOTAL);
