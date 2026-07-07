@@ -40,8 +40,8 @@ function setup() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'syncAll') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('syncAll').timeBased().everyHours(1).create();
-  Logger.log('1時間ごとの自動実行トリガーを登録しました。');
+  ScriptApp.newTrigger('syncAll').timeBased().everyWeeks(1).onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(6).create();
+  Logger.log('毎週月曜6時の自動実行トリガーを登録しました。');
 
   syncAll();
 }
