@@ -110,16 +110,24 @@ function customformLogin(account, passphrase) {
   return buildCookieHeader(mergedCookies);
 }
 
+// 1回の実行で新規に詳細取得する回答の最大件数（実行時間の上限対策。超えた分は次回実行で続きを取得する）
+var MAX_DETAIL_FETCH_PER_RUN = 200;
+
 /**
  * 指定フォームの回答一覧ページ（全ページ分）を取得し、スプレッドシートに未反映の回答だけ追記する。
  * 戻り値は追加した件数。
+ *
+ * 回答一覧ページのHTMLに埋め込まれる <answer-info-component> は「社名・担当者名」など
+ * ごく一部の質問しか含まないため、回答ID・日時の一覧だけをそこから取得し、
+ * 質問文は /api/manage/form/question、各回答の全項目は /api/manage/form/answer/info/<ID>
+ * から個別に取得する。
  */
 function syncFormToSheet(ss, formConf, cookieHeader) {
-  var comps = fetchAllAnswerComponents(formConf.id, cookieHeader);
-  if (comps.length === 0) return 0;
+  var headings = fetchQuestionHeadings(formConf.id, cookieHeader);
+  if (headings.length === 0) return 0;
 
-  var headings = JSON.parse(htmlDecode(comps[0].question_headings));
-  headings.sort(function (a, b) { return a.order_id - b.order_id; });
+  var answerMetas = fetchAllAnswerMetas(formConf.id, cookieHeader);
+  if (answerMetas.length === 0) return 0;
 
   var sheet = ss.getSheetByName(formConf.sheetName);
   if (!sheet) sheet = ss.insertSheet(formConf.sheetName);
@@ -148,44 +156,77 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
     });
   }
 
-  var newRows = [];
-  comps.forEach(function (comp) {
-    var answer = JSON.parse(htmlDecode(comp.answer));
-    if (answer.del_flg) return; // 削除済みの回答は無視
-    if (existingIds[String(answer.answer_id)]) return; // 既に反映済み
+  var targets = answerMetas.filter(function (m) {
+    return !m.del_flg && !existingIds[String(m.answer_id)];
+  });
+  targets.sort(function (a, b) { return new Date(a.create_time) - new Date(b.create_time); });
 
-    var options = JSON.parse(htmlDecode(comp.answer_options));
+  var limited = targets.slice(0, MAX_DETAIL_FETCH_PER_RUN);
+  var newRows = [];
+  limited.forEach(function (meta) {
+    var detail = fetchAnswerDetail(formConf.id, meta.answer_id, cookieHeader);
+    if (!detail) return;
+
     var qTitleToValue = {};
     headings.forEach(function (q) {
-      var vals = options[String(q.question_id)];
+      var vals = detail.answers[String(q.question_id)];
       qTitleToValue[q.title] = vals ? vals.join('、') : '';
     });
 
-    var createDate = new Date(answer.create_time.replace(' ', 'T'));
+    var createDate = new Date(meta.create_time.replace(' ', 'T'));
     var row = headerRow.map(function (col) {
-      if (col === '回答ID') return answer.answer_id;
+      if (col === '回答ID') return meta.answer_id;
       if (col === '回答日時') return createDate;
       return qTitleToValue.hasOwnProperty(col) ? qTitleToValue[col] : '';
     });
-
-    newRows.push({ time: createDate.getTime(), row: row });
+    newRows.push(row);
   });
-
-  newRows.sort(function (a, b) { return a.time - b.time; });
 
   if (newRows.length > 0) {
     var startRow = sheet.getLastRow() + 1;
-    sheet.getRange(startRow, 1, newRows.length, headerRow.length)
-      .setValues(newRows.map(function (r) { return r.row; }));
+    sheet.getRange(startRow, 1, newRows.length, headerRow.length).setValues(newRows);
+  }
+
+  if (targets.length > limited.length) {
+    Logger.log(formConf.name + ': 未取得の回答が残り ' + (targets.length - limited.length) + ' 件あります。次回の自動実行で続きを取り込みます。');
   }
 
   return newRows.length;
 }
 
 /**
- * 指定フォームの回答一覧を全ページ分取得し、各回答の <answer-info-component> の属性一覧を返す。
+ * フォームの質問一覧（質問ID・タイトル・表示順）を取得する。
  */
-function fetchAllAnswerComponents(formId, cookieHeader) {
+function fetchQuestionHeadings(formId, cookieHeader) {
+  var res = UrlFetchApp.fetch(BASE_URL + '/api/manage/form/question?customform_id=' + formId, {
+    headers: { Cookie: cookieHeader, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) return [];
+  var json = JSON.parse(res.getContentText());
+  if (json.status !== 'OK') return [];
+  return json.result.slice().sort(function (a, b) { return a.order_id - b.order_id; });
+}
+
+/**
+ * 指定した回答の全質問への回答内容を取得する。{ answers: { question_id: [値, ...] } } を返す。
+ */
+function fetchAnswerDetail(formId, answerId, cookieHeader) {
+  var url = BASE_URL + '/api/manage/form/answer/info/' + answerId + '?customform_id=' + formId;
+  var res = UrlFetchApp.fetch(url, {
+    headers: { Cookie: cookieHeader, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) return null;
+  var json = JSON.parse(res.getContentText());
+  if (json.status !== 'OK') return null;
+  return json.result;
+}
+
+/**
+ * 指定フォームの回答一覧を全ページ分取得し、各回答の {回答ID, 回答日時, 削除フラグ} の一覧を返す。
+ */
+function fetchAllAnswerMetas(formId, cookieHeader) {
   var all = [];
   var page = 1;
   var MAX_PAGES = 500; // 安全のための上限
@@ -198,10 +239,10 @@ function fetchAllAnswerComponents(formId, cookieHeader) {
     });
     if (res.getResponseCode() !== 200) break;
 
-    var comps = extractAnswerComponents(res.getContentText());
-    if (comps.length === 0) break;
+    var metas = extractAnswerMetas(res.getContentText());
+    if (metas.length === 0) break;
 
-    all = all.concat(comps);
+    all = all.concat(metas);
     page++;
   }
 
@@ -209,21 +250,17 @@ function fetchAllAnswerComponents(formId, cookieHeader) {
 }
 
 /**
- * HTML中の <answer-info-component :answer="..." :answer_options="..." :question_headings="..."> を
- * すべて抜き出し、各属性の生文字列（HTMLエンティティのまま）を配列で返す。
+ * HTML中の <answer-info-component :answer="..."> から回答ID・回答日時・削除フラグだけを抜き出す。
  */
-function extractAnswerComponents(html) {
+function extractAnswerMetas(html) {
   var tagRe = /<answer-info-component\b([^>]*)>/g;
   var results = [];
   var tagMatch;
   while ((tagMatch = tagRe.exec(html)) !== null) {
-    var attrs = tagMatch[1];
-    var answer = extractAttr(attrs, 'answer');
-    var answerOptions = extractAttr(attrs, 'answer_options');
-    var questionHeadings = extractAttr(attrs, 'question_headings');
-    if (answer && answerOptions && questionHeadings) {
-      results.push({ answer: answer, answer_options: answerOptions, question_headings: questionHeadings });
-    }
+    var raw = extractAttr(tagMatch[1], 'answer');
+    if (!raw) continue;
+    var answer = JSON.parse(htmlDecode(raw));
+    results.push({ answer_id: answer.answer_id, create_time: answer.create_time, del_flg: answer.del_flg });
   }
   return results;
 }
