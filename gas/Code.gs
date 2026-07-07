@@ -127,6 +127,9 @@ var MAX_DETAIL_FETCH_PER_RUN = 200;
  * ラジオボタン形式（input_type=1、10点満点評価など）の質問だけを合計点・平均の対象にする。
  * 同じ質問文が複数の質問IDに重複登録されている場合は1列にまとめる。
  */
+// この文言を含む質問（HPやSNSでの紹介可否など）は合計点・平均よりも後ろの末尾に配置する
+var TRAILING_TITLE_MARKER = 'ホームページ';
+
 function syncFormToSheet(ss, formConf, cookieHeader) {
   var headings = fetchQuestionHeadings(formConf.id, cookieHeader);
   if (headings.length < 2) return 0;
@@ -135,14 +138,12 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
   var personHeading = headings[1];
   var restHeadings = headings.slice(2); // ★御社名・★担当者名以外の質問（重複タイトルを含む場合あり）
 
-  var restTitles = []; // 表示順を保った重複なしの質問文一覧
-  var seenTitles = {};
-  restHeadings.forEach(function (q) {
-    if (!seenTitles[q.title]) {
-      seenTitles[q.title] = true;
-      restTitles.push(q.title);
-    }
-  });
+  var normalHeadings = restHeadings.filter(function (q) { return q.title.indexOf(TRAILING_TITLE_MARKER) === -1; });
+  var trailingHeadings = restHeadings.filter(function (q) { return q.title.indexOf(TRAILING_TITLE_MARKER) !== -1; });
+
+  var normalTitles = uniqueTitles(normalHeadings);
+  var trailingTitles = uniqueTitles(trailingHeadings);
+
   var numericQuestionIds = restHeadings
     .filter(function (q) { return q.input_type === 1; })
     .map(function (q) { return q.question_id; });
@@ -155,18 +156,30 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
 
   var headerRow;
   if (sheet.getLastRow() === 0) {
-    headerRow = ['日付', '社名', '担当者'].concat(restTitles).concat(['合計点', '平均', '回答ID']);
+    headerRow = ['日付', '社名', '担当者']
+      .concat(normalTitles)
+      .concat(['合計点', '平均'])
+      .concat(trailingTitles)
+      .concat(['回答ID']);
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
     sheet.setFrozenRows(1);
   } else {
     headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    // 新しい質問が増えていた場合は「回答ID」の手前に列を追加する
-    var insertPos = headerRow.indexOf('回答ID');
-    if (insertPos === -1) insertPos = headerRow.length;
-    restTitles.forEach(function (title) {
+    // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は「回答ID」の手前に追加する
+    var normalInsertPos = headerRow.indexOf('合計点');
+    if (normalInsertPos === -1) normalInsertPos = headerRow.length;
+    normalTitles.forEach(function (title) {
       if (headerRow.indexOf(title) === -1) {
-        headerRow.splice(insertPos, 0, title);
-        insertPos++;
+        headerRow.splice(normalInsertPos, 0, title);
+        normalInsertPos++;
+      }
+    });
+    var trailingInsertPos = headerRow.indexOf('回答ID');
+    if (trailingInsertPos === -1) trailingInsertPos = headerRow.length;
+    trailingTitles.forEach(function (title) {
+      if (headerRow.indexOf(title) === -1) {
+        headerRow.splice(trailingInsertPos, 0, title);
+        trailingInsertPos++;
       }
     });
     if (headerRow.indexOf('回答ID') === -1) headerRow.push('回答ID');
@@ -237,6 +250,21 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
   }
 
   return newRows.length;
+}
+
+/**
+ * 質問一覧から、表示順を保った重複なしの質問文一覧を作る。
+ */
+function uniqueTitles(headings) {
+  var titles = [];
+  var seen = {};
+  headings.forEach(function (q) {
+    if (!seen[q.title]) {
+      seen[q.title] = true;
+      titles.push(q.title);
+    }
+  });
+  return titles;
 }
 
 /**
