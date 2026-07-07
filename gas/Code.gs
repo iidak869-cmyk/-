@@ -121,10 +121,31 @@ var MAX_DETAIL_FETCH_PER_RUN = 200;
  * ごく一部の質問しか含まないため、回答ID・日時の一覧だけをそこから取得し、
  * 質問文は /api/manage/form/question、各回答の全項目は /api/manage/form/answer/info/<ID>
  * から個別に取得する。
+ *
+ * シートの列は「日付・社名・担当者・（各質問）・合計点・平均・回答ID」の順。
+ * 先頭2つの質問（★御社名・★担当者名）は社名／担当者列に割り当て、
+ * ラジオボタン形式（input_type=1、10点満点評価など）の質問だけを合計点・平均の対象にする。
+ * 同じ質問文が複数の質問IDに重複登録されている場合は1列にまとめる。
  */
 function syncFormToSheet(ss, formConf, cookieHeader) {
   var headings = fetchQuestionHeadings(formConf.id, cookieHeader);
-  if (headings.length === 0) return 0;
+  if (headings.length < 2) return 0;
+
+  var nameHeading = headings[0];
+  var personHeading = headings[1];
+  var restHeadings = headings.slice(2); // ★御社名・★担当者名以外の質問（重複タイトルを含む場合あり）
+
+  var restTitles = []; // 表示順を保った重複なしの質問文一覧
+  var seenTitles = {};
+  restHeadings.forEach(function (q) {
+    if (!seenTitles[q.title]) {
+      seenTitles[q.title] = true;
+      restTitles.push(q.title);
+    }
+  });
+  var numericQuestionIds = restHeadings
+    .filter(function (q) { return q.input_type === 1; })
+    .map(function (q) { return q.question_id; });
 
   var answerMetas = fetchAllAnswerMetas(formConf.id, cookieHeader);
   if (answerMetas.length === 0) return 0;
@@ -134,24 +155,29 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
 
   var headerRow;
   if (sheet.getLastRow() === 0) {
-    headerRow = ['回答ID', '回答日時'].concat(headings.map(function (q) { return q.title; }));
+    headerRow = ['日付', '社名', '担当者'].concat(restTitles).concat(['合計点', '平均', '回答ID']);
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
     sheet.setFrozenRows(1);
   } else {
     headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    // 新しい質問が増えていた場合は列を追加する
-    headings.forEach(function (q) {
-      if (headerRow.indexOf(q.title) === -1) {
-        headerRow.push(q.title);
-        sheet.getRange(1, headerRow.length).setValue(q.title).setFontWeight('bold');
+    // 新しい質問が増えていた場合は「回答ID」の手前に列を追加する
+    var insertPos = headerRow.indexOf('回答ID');
+    if (insertPos === -1) insertPos = headerRow.length;
+    restTitles.forEach(function (title) {
+      if (headerRow.indexOf(title) === -1) {
+        headerRow.splice(insertPos, 0, title);
+        insertPos++;
       }
     });
+    if (headerRow.indexOf('回答ID') === -1) headerRow.push('回答ID');
+    sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
   }
 
+  var idColIndex = headerRow.indexOf('回答ID');
   var existingIds = {};
   var lastRow = sheet.getLastRow();
   if (lastRow > 1) {
-    sheet.getRange(2, 1, lastRow - 1, 1).getValues().forEach(function (r) {
+    sheet.getRange(2, idColIndex + 1, lastRow - 1, 1).getValues().forEach(function (r) {
       existingIds[String(r[0])] = true;
     });
   }
@@ -168,15 +194,34 @@ function syncFormToSheet(ss, formConf, cookieHeader) {
     if (!detail) return;
 
     var qTitleToValue = {};
-    headings.forEach(function (q) {
+    restHeadings.forEach(function (q) {
       var vals = detail.answers[String(q.question_id)];
-      qTitleToValue[q.title] = vals ? vals.join('、') : '';
+      var v = vals ? vals.join('、') : '';
+      if (v || !qTitleToValue.hasOwnProperty(q.title)) qTitleToValue[q.title] = v;
     });
 
+    var sum = 0;
+    var count = 0;
+    numericQuestionIds.forEach(function (qid) {
+      var vals = detail.answers[String(qid)];
+      var n = vals && vals[0] !== '' ? parseFloat(vals[0]) : NaN;
+      if (!isNaN(n)) {
+        sum += n;
+        count++;
+      }
+    });
+
+    var nameVal = (detail.answers[String(nameHeading.question_id)] || []).join('、');
+    var personVal = (detail.answers[String(personHeading.question_id)] || []).join('、');
     var createDate = new Date(meta.create_time.replace(' ', 'T'));
+
     var row = headerRow.map(function (col) {
+      if (col === '日付') return createDate;
+      if (col === '社名') return nameVal;
+      if (col === '担当者') return personVal;
+      if (col === '合計点') return count > 0 ? sum : '';
+      if (col === '平均') return count > 0 ? sum / count : '';
       if (col === '回答ID') return meta.answer_id;
-      if (col === '回答日時') return createDate;
       return qTitleToValue.hasOwnProperty(col) ? qTitleToValue[col] : '';
     });
     newRows.push(row);
