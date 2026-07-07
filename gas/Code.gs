@@ -134,6 +134,17 @@ var MAX_DETAIL_FETCH_PER_RUN = 200;
 // この文言を含む質問（HPやSNSでの紹介可否など）は合計点・平均よりも後ろの末尾に配置する
 var TRAILING_TITLE_MARKER = 'ホームページ';
 
+// 列の役割を表示テキストとは別に管理するための固定マーカー（セルのノートに保存する）。
+// これにより、シート上の見出し文字（表示テキスト）を自由に書き換えても列の対応が崩れない。
+var MARK = {
+  DATE: '__DATE__',
+  COMPANY: '__COMPANY__',
+  PERSON: '__PERSON__',
+  TOTAL: '__TOTAL__',
+  AVERAGE: '__AVERAGE__',
+  ANSWER_ID: '__ANSWER_ID__'
+};
+
 function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   var cookieHeader = auth.cookieHeader;
   var headings = fetchQuestionHeadings(formConf.id, cookieHeader);
@@ -159,39 +170,55 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   var sheet = ss.getSheetByName(formConf.sheetName);
   if (!sheet) sheet = ss.insertSheet(formConf.sheetName);
 
-  var headerRow;
+  var headerRow; // 表示テキスト（ユーザーが変更してもよい）
+  var markerRow; // 列の役割・質問文の原文（内部判定専用。ノートに保存）
   if (sheet.getLastRow() === 0) {
     headerRow = ['日付', '社名', '担当者']
       .concat(normalTitles)
       .concat(['合計点', '平均'])
       .concat(trailingTitles)
       .concat(['回答ID']);
+    markerRow = [MARK.DATE, MARK.COMPANY, MARK.PERSON]
+      .concat(normalTitles)
+      .concat([MARK.TOTAL, MARK.AVERAGE])
+      .concat(trailingTitles)
+      .concat([MARK.ANSWER_ID]);
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
+    setHeaderNotes(sheet, markerRow);
     sheet.setFrozenRows(1);
   } else {
-    headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var lastCol = sheet.getLastColumn();
+    headerRow = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    markerRow = sheet.getRange(1, 1, 1, lastCol).getNotes()[0];
+
     // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は「回答ID」の手前に追加する
-    var normalInsertPos = headerRow.indexOf('合計点');
+    var normalInsertPos = markerRow.indexOf(MARK.TOTAL);
     if (normalInsertPos === -1) normalInsertPos = headerRow.length;
     normalTitles.forEach(function (title) {
-      if (headerRow.indexOf(title) === -1) {
+      if (markerRow.indexOf(title) === -1) {
         headerRow.splice(normalInsertPos, 0, title);
+        markerRow.splice(normalInsertPos, 0, title);
         normalInsertPos++;
       }
     });
-    var trailingInsertPos = headerRow.indexOf('回答ID');
+    var trailingInsertPos = markerRow.indexOf(MARK.ANSWER_ID);
     if (trailingInsertPos === -1) trailingInsertPos = headerRow.length;
     trailingTitles.forEach(function (title) {
-      if (headerRow.indexOf(title) === -1) {
+      if (markerRow.indexOf(title) === -1) {
         headerRow.splice(trailingInsertPos, 0, title);
+        markerRow.splice(trailingInsertPos, 0, title);
         trailingInsertPos++;
       }
     });
-    if (headerRow.indexOf('回答ID') === -1) headerRow.push('回答ID');
-    sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
+    if (markerRow.indexOf(MARK.ANSWER_ID) === -1) {
+      headerRow.push('回答ID');
+      markerRow.push(MARK.ANSWER_ID);
+    }
+    sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
+    setHeaderNotes(sheet, markerRow);
   }
 
-  var idColIndex = headerRow.indexOf('回答ID');
+  var idColIndex = markerRow.indexOf(MARK.ANSWER_ID);
   sheet.hideColumns(idColIndex + 1); // 重複チェック用の内部列なので非表示にする
 
   var existingIds = {};
@@ -236,14 +263,14 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
     var personVal = (detail.answers[String(personHeading.question_id)] || []).join('、');
     var createDate = new Date(meta.create_time.replace(' ', 'T'));
 
-    var row = headerRow.map(function (col) {
-      if (col === '日付') return createDate;
-      if (col === '社名') return nameVal;
-      if (col === '担当者') return personVal;
-      if (col === '合計点') return count > 0 ? sum : '';
-      if (col === '平均') return count > 0 ? sum / count : '';
-      if (col === '回答ID') return meta.answer_id;
-      return qTitleToValue.hasOwnProperty(col) ? qTitleToValue[col] : '';
+    var row = markerRow.map(function (marker) {
+      if (marker === MARK.DATE) return createDate;
+      if (marker === MARK.COMPANY) return nameVal;
+      if (marker === MARK.PERSON) return personVal;
+      if (marker === MARK.TOTAL) return count > 0 ? sum : '';
+      if (marker === MARK.AVERAGE) return count > 0 ? sum / count : '';
+      if (marker === MARK.ANSWER_ID) return meta.answer_id;
+      return qTitleToValue.hasOwnProperty(marker) ? qTitleToValue[marker] : '';
     });
     newRows.push(row);
     syncedMetas.push(meta);
@@ -270,6 +297,19 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   }
 
   return newRows.length;
+}
+
+/**
+ * ヘッダー行の各セルに、列の役割・質問文の原文をノートとして保存する（既に同じ内容のノートが
+ * 付いている列は書き直さない。表示テキストと違って上書きしても実害はないが不要な変更を避ける）。
+ */
+function setHeaderNotes(sheet, markerRow) {
+  var current = sheet.getRange(1, 1, 1, markerRow.length).getNotes()[0];
+  markerRow.forEach(function (marker, i) {
+    if (current[i] !== marker) {
+      sheet.getRange(1, i + 1).setNote(marker);
+    }
+  });
 }
 
 /**
