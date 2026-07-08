@@ -1,0 +1,2 @@
+完了日時,タスク名,対応内容,関連リンク
+2026-07-07,アンケートフォームの自動反映,customform.jpの3フォームの回答をGoogleスプレッドシートに週1(金曜19時)自動反映。反映後にcustomform.jp側の回答を削除するオプションも追加。,https://github.com/iidak869-cmyk/-/commits/claude/gas-automation-capabilities-p279vn

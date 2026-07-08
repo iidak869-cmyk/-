@@ -51,23 +51,14 @@ customform.jp側でも削除します（「削除済み回答一覧」に移動�
 `gas/Code.gs` 先頭の `FORMS` 配列に `{ name, id, sheetName }` を追加/削除してください。
 `id` は customform.jp の管理画面でフォームを開いたときのURL（`/manage/form/<id>`）に含まれる数字です。
 
-## 対応履歴ログ（gas-log/）
+## 対応履歴ログ（completion-log.csv）
 
-Claudeが自動化タスクに対応完了した際の内容を記録するための、独立した小さなGAS Webhookです。
-`gas/Code.gs`（アンケート自動反映）本体とは無関係で、複数の自動化タスクの完了履歴を1つの
-Googleスプレッドシートにまとめるためのものです。
+Claudeが自動化タスクに対応完了するたびに、`completion-log.csv` に1行追記してpushする。
+列は「完了日時・タスク名・対応内容・関連リンク」の順。Excelやスプレッドシートソフトでそのまま開ける。
 
-### セットアップ手順
+### gas-log/ について（現在未使用）
 
-1. https://script.google.com で新しいプロジェクトを作成する
-2. `gas-log/Code.gs` の内容をコピーして貼り付ける
-3. 「プロジェクトの設定」→「スクリプト プロパティ」で `LOG_SECRET` に適当な合言葉を設定する
-4. エディタ上部「デプロイ」→「新しいデプロイ」→ 種類:ウェブアプリ
-   - 実行するユーザー: 自分
-   - アクセスできるユーザー: 全員
-   でデプロイし、発行されたウェブアプリのURLを控える
-5. 発行されたURLと`LOG_SECRET`を、Claude Code環境の環境変数
-   `LOG_WEBHOOK_URL` / `LOG_WEBHOOK_SECRET` として登録する（チャットに直接貼らない）
-
-初回のPOSTで「自動化 対応履歴」という名前のGoogleスプレッドシートが自動作成され、
-以降はタスク完了のたびに日時・タスク名・対応内容・関連リンクが1行追記されます。
+当初はGoogleスプレッドシートに直接記録するための独立したGAS Webhook（`gas-log/Code.gs`）を
+用意したが、Google Workspace（weeare.co.jp）側の設定により匿名でのウェブアプリアクセスが
+ブロックされ、外部からPOSTできなかったため未使用。Workspace管理者側でApps Scriptウェブアプリの
+匿名アクセスを許可できれば、`gas-log/Code.gs` を使う方式に戻すことも可能。
