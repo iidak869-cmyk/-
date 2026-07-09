@@ -10,7 +10,6 @@
  * 以降は syncAll() が定期実行トリガーにより自動で回答を反映する。
  */
 
-// 同期対象のフォーム一覧（customform.jp の「フォーム一覧」ページから取得したID）
 var FORMS = [
   { name: 'Cytekiサポート中間アンケート', id: 241254, sheetName: 'Cyteki中間_回答一覧' },
   { name: 'Cytekiサポート最終アンケート', id: 237126, sheetName: 'Cyteki最終_回答一覧' },
@@ -19,10 +18,6 @@ var FORMS = [
 
 var BASE_URL = 'https://customform.jp';
 
-/**
- * 初回セットアップ用。新しいスプレッドシートを作成し、定期実行トリガーを登録して初回同期を行う。
- * 2回目以降実行すると、スプレッドシートは作り直さず、トリガーだけ再登録する。
- */
 function setup() {
   var props = PropertiesService.getScriptProperties();
   var spreadsheetId = props.getProperty('SPREADSHEET_ID');
@@ -54,9 +49,6 @@ function setup() {
   syncAll();
 }
 
-/**
- * 全フォームの回答を同期するメイン処理。定期実行トリガーから呼ばれる。
- */
 function syncAll() {
   var props = PropertiesService.getScriptProperties();
   var account = props.getProperty('CUSTOMFORM_ACCOUNT');
@@ -84,9 +76,6 @@ function syncAll() {
   });
 }
 
-/**
- * customform.jp にログインし、以降のAPI/ページ取得に使う { cookieHeader, xsrfToken } を返す。
- */
 function customformLogin(account, passphrase) {
   var pre = UrlFetchApp.fetch(BASE_URL + '/signin', { muteHttpExceptions: true });
   var preCookies = getCookiesFromResponse(pre);
@@ -122,42 +111,19 @@ function customformLogin(account, passphrase) {
   };
 }
 
-// 1回の実行で新規に詳細取得する回答の最大件数（実行時間の上限対策。超えた分は次回実行で続きを取得する）
 var MAX_DETAIL_FETCH_PER_RUN = 200;
 
-/**
- * 指定フォームの回答一覧ページ（全ページ分）を取得し、スプレッドシートに未反映の回答だけ追記する。
- * 戻り値は追加した件数。
- *
- * 回答一覧ページのHTMLに埋め込まれる <answer-info-component> は「社名・担当者名」など
- * ごく一部の質問しか含まないため、回答ID・日時の一覧だけをそこから取得し、
- * 質問文は /api/manage/form/question、各回答の全項目は /api/manage/form/answer/info/<ID>
- * から個別に取得する。
- *
- * シートの列は「日付・社名・担当者・（各質問）・合計点・平均」の順。
- * 先頭2つの質問（★御社名・★担当者名）は社名／担当者列に割り当て、
- * ラジオボタン形式（input_type=1、10点満点評価など）の質問だけを合計点・平均の対象にする。
- * 同じ質問文が複数の質問IDに重複登録されている場合は1列にまとめる。
- * 重複防止用の回答IDはシートの列には持たず、専用の非表示シート（_同期管理）で管理する。
- */
-// この文言を含む質問（HPやSNSでの紹介可否など）は合計点・平均よりも後ろの末尾に配置する
 var TRAILING_TITLE_MARKER = 'ホームページ';
 
-// 列の役割を表示テキストとは別に管理するための固定マーカー（セルのノートに保存する）。
-// これにより、シート上の見出し文字（表示テキスト）を自由に書き換えても列の対応が崩れない。
 var MARK = {
   DATE: '__DATE__',
   COMPANY: '__COMPANY__',
   PERSON: '__PERSON__',
   TOTAL: '__TOTAL__',
-  AVERAGE: '__AVERAGE__'
+  AVERAGE: '__AVERAGE__',
+  ANSWER_ID: '__ANSWER_ID__'
 };
 
-// 重複防止用の「回答ID」導入前に作られたシートに残っている、その列の判定マーカー（移行処理専用）。
-var LEGACY_ANSWER_ID_MARK = '__ANSWER_ID__';
-
-// 質問文が長いため、フォームごとに列見出しとして表示する短い名前を指定する（質問IDで指定）。
-// 指定のない質問は、customform.jp上の質問文がそのまま列見出しになる。
 var RENAME_MAP = {
   241254: { // Cytekiサポート中間アンケート
     2566947: '①担当者\n満足度',
@@ -202,12 +168,11 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
 
   var nameHeading = headings[0];
   var personHeading = headings[1];
-  var restHeadings = headings.slice(2); // ★御社名・★担当者名以外の質問（重複タイトルを含む場合あり）
+  var restHeadings = headings.slice(2);
 
   var normalHeadings = restHeadings.filter(function (q) { return q.title.indexOf(TRAILING_TITLE_MARKER) === -1; });
   var trailingHeadings = restHeadings.filter(function (q) { return q.title.indexOf(TRAILING_TITLE_MARKER) !== -1; });
 
-  // marker: 質問文の原文（内部判定専用・不変）／ display: 列見出しに表示する文言（短縮名があれば使う）
   var normalEntries = uniqueHeadingEntries(normalHeadings, formConf.id);
   var trailingEntries = uniqueHeadingEntries(trailingHeadings, formConf.id);
   var normalMarkers = normalEntries.map(function (e) { return e.marker; });
@@ -225,18 +190,19 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   var sheet = ss.getSheetByName(formConf.sheetName);
   if (!sheet) sheet = ss.insertSheet(formConf.sheetName);
 
-  var headerRow; // 表示テキスト（短縮名。ユーザーが変更してもよい）
-  var markerRow; // 列の役割・質問文の原文（内部判定専用。ノートに保存）
-  var isNewSheet = sheet.getLastRow() === 0;
-  if (isNewSheet) {
+  var headerRow;
+  var markerRow;
+  if (sheet.getLastRow() === 0) {
     headerRow = ['日付', '社名', '担当者']
       .concat(normalDisplays)
       .concat(['合計点', '平均'])
-      .concat(trailingDisplays);
+      .concat(trailingDisplays)
+      .concat(['回答ID']);
     markerRow = [MARK.DATE, MARK.COMPANY, MARK.PERSON]
       .concat(normalMarkers)
       .concat([MARK.TOTAL, MARK.AVERAGE])
-      .concat(trailingMarkers);
+      .concat(trailingMarkers)
+      .concat([MARK.ANSWER_ID]);
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
     setHeaderNotes(sheet, markerRow);
     sheet.setFrozenRows(1);
@@ -246,7 +212,6 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
     markerRow = sheet.getRange(1, 1, 1, lastCol).getNotes()[0];
 
     // ノート機能の導入前に作られた列（ノートが空）を、表示テキストから推測して補完する。
-    // これにより、過去に作られたシートでも重複列を作らずに済む。
     var allEntries = normalEntries.concat(trailingEntries);
     for (var i = 0; i < headerRow.length; i++) {
       if (markerRow[i]) continue;
@@ -256,13 +221,13 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
       else if (text === '担当者') markerRow[i] = MARK.PERSON;
       else if (text === '合計点') markerRow[i] = MARK.TOTAL;
       else if (text === '平均') markerRow[i] = MARK.AVERAGE;
+      else if (text === '回答ID') markerRow[i] = MARK.ANSWER_ID;
       else {
         var match = allEntries.filter(function (e) { return e.display === text; })[0];
         if (match) markerRow[i] = match.marker;
       }
     }
 
-    // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は末尾に追加する
     var normalInsertPos = markerRow.indexOf(MARK.TOTAL);
     if (normalInsertPos === -1) normalInsertPos = headerRow.length;
     normalEntries.forEach(function (e) {
@@ -272,21 +237,33 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
         normalInsertPos++;
       }
     });
+    var trailingInsertPos = markerRow.indexOf(MARK.ANSWER_ID);
+    if (trailingInsertPos === -1) trailingInsertPos = headerRow.length;
     trailingEntries.forEach(function (e) {
       if (markerRow.indexOf(e.marker) === -1) {
-        headerRow.push(e.display);
-        markerRow.push(e.marker);
+        headerRow.splice(trailingInsertPos, 0, e.display);
+        markerRow.splice(trailingInsertPos, 0, e.marker);
+        trailingInsertPos++;
       }
     });
+    if (markerRow.indexOf(MARK.ANSWER_ID) === -1) {
+      headerRow.push('回答ID');
+      markerRow.push(MARK.ANSWER_ID);
+    }
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
     setHeaderNotes(sheet, markerRow);
   }
 
-  // 重複チェック用の回答IDは、シートの列ではなく専用の非表示シートで管理する
-  // （ユーザーがシートの列を自由に使えるようにするため）。
-  var metaSheet = getMetaSheet(ss);
-  migrateLegacyIdColumn(sheet, metaSheet, formConf.id);
-  var existingIds = getSyncedIds(metaSheet, formConf.id);
+  var idColIndex = markerRow.indexOf(MARK.ANSWER_ID);
+  sheet.hideColumns(idColIndex + 1);
+
+  var existingIds = {};
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    sheet.getRange(2, idColIndex + 1, lastRow - 1, 1).getValues().forEach(function (r) {
+      existingIds[String(r[0])] = true;
+    });
+  }
 
   var targets = answerMetas.filter(function (m) {
     return !m.del_flg && !existingIds[String(m.answer_id)];
@@ -295,7 +272,7 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
 
   var limited = targets.slice(0, MAX_DETAIL_FETCH_PER_RUN);
   var newRows = [];
-  var syncedMetas = []; // 反映に成功した回答（削除対象）
+  var syncedMetas = [];
   limited.forEach(function (meta) {
     var detail = fetchAnswerDetail(formConf.id, meta.answer_id, cookieHeader);
     if (!detail) return;
@@ -328,6 +305,7 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
       if (marker === MARK.PERSON) return personVal;
       if (marker === MARK.TOTAL) return count > 0 ? sum : '';
       if (marker === MARK.AVERAGE) return count > 0 ? sum / count : '';
+      if (marker === MARK.ANSWER_ID) return meta.answer_id;
       return qTitleToValue.hasOwnProperty(marker) ? qTitleToValue[marker] : '';
     });
     newRows.push(row);
@@ -337,14 +315,12 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   if (newRows.length > 0) {
     var startRow = sheet.getLastRow() + 1;
     sheet.getRange(startRow, 1, newRows.length, headerRow.length).setValues(newRows);
-    appendSyncedIds(metaSheet, formConf.id, syncedMetas.map(function (m) { return m.answer_id; }));
   }
 
   if (targets.length > limited.length) {
     Logger.log(formConf.name + ': 未取得の回答が残り ' + (targets.length - limited.length) + ' 件あります。次回の自動実行で続きを取り込みます。');
   }
 
-  // スプレッドシートへの反映が確実に終わった後に、customform.jp側の回答を削除（ゴミ箱へ移動）する
   if (deleteAfterSync) {
     syncedMetas.forEach(function (meta) {
       try {
@@ -358,72 +334,6 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   return newRows.length;
 }
 
-/**
- * 重複防止用の回答IDを記録する非表示シートを取得（無ければ作成）する。
- * A列=フォームID、B列=回答ID の単純なログ形式。
- */
-function getMetaSheet(ss) {
-  var sheet = ss.getSheetByName('_同期管理');
-  if (!sheet) {
-    sheet = ss.insertSheet('_同期管理');
-    sheet.getRange(1, 1, 1, 2).setValues([['form_id', 'answer_id']]);
-    sheet.hideSheet();
-  }
-  return sheet;
-}
-
-/**
- * 指定フォームについて、既に反映済みの回答IDの集合を返す。
- */
-function getSyncedIds(metaSheet, formId) {
-  var ids = {};
-  var lastRow = metaSheet.getLastRow();
-  if (lastRow > 1) {
-    metaSheet.getRange(2, 1, lastRow - 1, 2).getValues().forEach(function (r) {
-      if (String(r[0]) === String(formId)) ids[String(r[1])] = true;
-    });
-  }
-  return ids;
-}
-
-/**
- * 反映済みの回答IDを非表示シートに追記する。
- */
-function appendSyncedIds(metaSheet, formId, answerIds) {
-  if (answerIds.length === 0) return;
-  var startRow = metaSheet.getLastRow() + 1;
-  var rows = answerIds.map(function (id) { return [formId, id]; });
-  metaSheet.getRange(startRow, 1, rows.length, 2).setValues(rows);
-}
-
-/**
- * 回答IDをシートの列で管理していた旧バージョンからの移行処理。
- * その列（ノートが LEGACY_ANSWER_ID_MARK、または見出しが「回答ID」）に残っている値を
- * 非表示シートに一度だけ取り込み、以後はそのシートの列を一切触らない
- * （ユーザーが自由に使えるようにするため）。
- */
-function migrateLegacyIdColumn(sheet, metaSheet, formId) {
-  if (Object.keys(getSyncedIds(metaSheet, formId)).length > 0) return; // 移行済み
-  var lastCol = sheet.getLastColumn();
-  var lastRow = sheet.getLastRow();
-  if (lastCol === 0 || lastRow <= 1) return;
-
-  var notes = sheet.getRange(1, 1, 1, lastCol).getNotes()[0];
-  var texts = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var idColIndex = notes.indexOf(LEGACY_ANSWER_ID_MARK);
-  if (idColIndex === -1) idColIndex = texts.indexOf('回答ID');
-  if (idColIndex === -1) return;
-
-  var ids = sheet.getRange(2, idColIndex + 1, lastRow - 1, 1).getValues()
-    .map(function (r) { return r[0]; })
-    .filter(function (v) { return v !== '' && v !== null; });
-  appendSyncedIds(metaSheet, formId, ids);
-}
-
-/**
- * ヘッダー行の各セルに、列の役割・質問文の原文をノートとして保存する（既に同じ内容のノートが
- * 付いている列は書き直さない。表示テキストと違って上書きしても実害はないが不要な変更を避ける）。
- */
 function setHeaderNotes(sheet, markerRow) {
   var current = sheet.getRange(1, 1, 1, markerRow.length).getNotes()[0];
   markerRow.forEach(function (marker, i) {
@@ -433,10 +343,6 @@ function setHeaderNotes(sheet, markerRow) {
   });
 }
 
-/**
- * 質問一覧から、表示順を保った重複なしの { marker（質問文の原文）, display（列見出しに表示する文言） }
- * の一覧を作る。同じ質問文が複数の質問IDに重複登録されている場合は最初の1件だけを使う。
- */
 function uniqueHeadingEntries(headings, formId) {
   var entries = [];
   var seen = {};
@@ -449,9 +355,6 @@ function uniqueHeadingEntries(headings, formId) {
   return entries;
 }
 
-/**
- * フォームの質問一覧（質問ID・タイトル・表示順）を取得する。
- */
 function fetchQuestionHeadings(formId, cookieHeader) {
   var res = UrlFetchApp.fetch(BASE_URL + '/api/manage/form/question?customform_id=' + formId, {
     headers: { Cookie: cookieHeader, Accept: 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
@@ -463,9 +366,6 @@ function fetchQuestionHeadings(formId, cookieHeader) {
   return json.result.slice().sort(function (a, b) { return a.order_id - b.order_id; });
 }
 
-/**
- * customform.jp側の回答を削除する（「削除済み回答一覧」に移動するだけで、復元可能）。
- */
 function deleteAnswerFromCustomform(formId, answerId, auth) {
   var res = UrlFetchApp.fetch(BASE_URL + '/api/manage/form/answer/remove', {
     method: 'post',
@@ -484,9 +384,6 @@ function deleteAnswerFromCustomform(formId, answerId, auth) {
   }
 }
 
-/**
- * 指定した回答の全質問への回答内容を取得する。{ answers: { question_id: [値, ...] } } を返す。
- */
 function fetchAnswerDetail(formId, answerId, cookieHeader) {
   var url = BASE_URL + '/api/manage/form/answer/info/' + answerId + '?customform_id=' + formId;
   var res = UrlFetchApp.fetch(url, {
@@ -499,13 +396,10 @@ function fetchAnswerDetail(formId, answerId, cookieHeader) {
   return json.result;
 }
 
-/**
- * 指定フォームの回答一覧を全ページ分取得し、各回答の {回答ID, 回答日時, 削除フラグ} の一覧を返す。
- */
 function fetchAllAnswerMetas(formId, cookieHeader) {
   var all = [];
   var page = 1;
-  var MAX_PAGES = 500; // 安全のための上限
+  var MAX_PAGES = 500;
 
   while (page <= MAX_PAGES) {
     var url = BASE_URL + '/manage/form/' + formId + '/answer?page=' + page;
@@ -525,9 +419,6 @@ function fetchAllAnswerMetas(formId, cookieHeader) {
   return all;
 }
 
-/**
- * HTML中の <answer-info-component :answer="..."> から回答ID・回答日時・削除フラグだけを抜き出す。
- */
 function extractAnswerMetas(html) {
   var tagRe = /<answer-info-component\b([^>]*)>/g;
   var results = [];
