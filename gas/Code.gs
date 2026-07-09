@@ -39,8 +39,17 @@ function setup() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'syncAll') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('syncAll').timeBased().everyWeeks(1).onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(19).create();
-  Logger.log('毎週金曜19時の自動実行トリガーを登録しました。');
+  var weekdays = [
+    ScriptApp.WeekDay.MONDAY,
+    ScriptApp.WeekDay.TUESDAY,
+    ScriptApp.WeekDay.WEDNESDAY,
+    ScriptApp.WeekDay.THURSDAY,
+    ScriptApp.WeekDay.FRIDAY
+  ];
+  weekdays.forEach(function (day) {
+    ScriptApp.newTrigger('syncAll').timeBased().everyWeeks(1).onWeekDay(day).atHour(19).create();
+  });
+  Logger.log('平日(月〜金)19時の自動実行トリガーを登録しました。');
 
   syncAll();
 }
