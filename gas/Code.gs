@@ -134,10 +134,11 @@ var MAX_DETAIL_FETCH_PER_RUN = 200;
  * 質問文は /api/manage/form/question、各回答の全項目は /api/manage/form/answer/info/<ID>
  * から個別に取得する。
  *
- * シートの列は「日付・社名・担当者・（各質問）・合計点・平均・回答ID」の順。
+ * シートの列は「日付・社名・担当者・（各質問）・合計点・平均」の順。
  * 先頭2つの質問（★御社名・★担当者名）は社名／担当者列に割り当て、
  * ラジオボタン形式（input_type=1、10点満点評価など）の質問だけを合計点・平均の対象にする。
  * 同じ質問文が複数の質問IDに重複登録されている場合は1列にまとめる。
+ * 重複防止用の回答IDはシートの列には持たず、専用の非表示シート（_同期管理）で管理する。
  */
 // この文言を含む質問（HPやSNSでの紹介可否など）は合計点・平均よりも後ろの末尾に配置する
 var TRAILING_TITLE_MARKER = 'ホームページ';
@@ -149,9 +150,11 @@ var MARK = {
   COMPANY: '__COMPANY__',
   PERSON: '__PERSON__',
   TOTAL: '__TOTAL__',
-  AVERAGE: '__AVERAGE__',
-  ANSWER_ID: '__ANSWER_ID__'
+  AVERAGE: '__AVERAGE__'
 };
+
+// 重複防止用の「回答ID」導入前に作られたシートに残っている、その列の判定マーカー（移行処理専用）。
+var LEGACY_ANSWER_ID_MARK = '__ANSWER_ID__';
 
 // 質問文が長いため、フォームごとに列見出しとして表示する短い名前を指定する（質問IDで指定）。
 // 指定のない質問は、customform.jp上の質問文がそのまま列見出しになる。
@@ -224,17 +227,16 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
 
   var headerRow; // 表示テキスト（短縮名。ユーザーが変更してもよい）
   var markerRow; // 列の役割・質問文の原文（内部判定専用。ノートに保存）
-  if (sheet.getLastRow() === 0) {
+  var isNewSheet = sheet.getLastRow() === 0;
+  if (isNewSheet) {
     headerRow = ['日付', '社名', '担当者']
       .concat(normalDisplays)
       .concat(['合計点', '平均'])
-      .concat(trailingDisplays)
-      .concat(['回答ID']);
+      .concat(trailingDisplays);
     markerRow = [MARK.DATE, MARK.COMPANY, MARK.PERSON]
       .concat(normalMarkers)
       .concat([MARK.TOTAL, MARK.AVERAGE])
-      .concat(trailingMarkers)
-      .concat([MARK.ANSWER_ID]);
+      .concat(trailingMarkers);
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]).setFontWeight('bold');
     setHeaderNotes(sheet, markerRow);
     sheet.setFrozenRows(1);
@@ -254,14 +256,13 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
       else if (text === '担当者') markerRow[i] = MARK.PERSON;
       else if (text === '合計点') markerRow[i] = MARK.TOTAL;
       else if (text === '平均') markerRow[i] = MARK.AVERAGE;
-      else if (text === '回答ID') markerRow[i] = MARK.ANSWER_ID;
       else {
         var match = allEntries.filter(function (e) { return e.display === text; })[0];
         if (match) markerRow[i] = match.marker;
       }
     }
 
-    // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は「回答ID」の手前に追加する
+    // 新しい通常の質問は「合計点」の手前に、末尾配置の質問は末尾に追加する
     var normalInsertPos = markerRow.indexOf(MARK.TOTAL);
     if (normalInsertPos === -1) normalInsertPos = headerRow.length;
     normalEntries.forEach(function (e) {
@@ -271,33 +272,21 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
         normalInsertPos++;
       }
     });
-    var trailingInsertPos = markerRow.indexOf(MARK.ANSWER_ID);
-    if (trailingInsertPos === -1) trailingInsertPos = headerRow.length;
     trailingEntries.forEach(function (e) {
       if (markerRow.indexOf(e.marker) === -1) {
-        headerRow.splice(trailingInsertPos, 0, e.display);
-        markerRow.splice(trailingInsertPos, 0, e.marker);
-        trailingInsertPos++;
+        headerRow.push(e.display);
+        markerRow.push(e.marker);
       }
     });
-    if (markerRow.indexOf(MARK.ANSWER_ID) === -1) {
-      headerRow.push('回答ID');
-      markerRow.push(MARK.ANSWER_ID);
-    }
     sheet.getRange(1, 1, 1, headerRow.length).setValues([headerRow]);
     setHeaderNotes(sheet, markerRow);
   }
 
-  var idColIndex = markerRow.indexOf(MARK.ANSWER_ID);
-  sheet.hideColumns(idColIndex + 1); // 重複チェック用の内部列なので非表示にする
-
-  var existingIds = {};
-  var lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    sheet.getRange(2, idColIndex + 1, lastRow - 1, 1).getValues().forEach(function (r) {
-      existingIds[String(r[0])] = true;
-    });
-  }
+  // 重複チェック用の回答IDは、シートの列ではなく専用の非表示シートで管理する
+  // （ユーザーがシートの列を自由に使えるようにするため）。
+  var metaSheet = getMetaSheet(ss);
+  migrateLegacyIdColumn(sheet, metaSheet, formConf.id);
+  var existingIds = getSyncedIds(metaSheet, formConf.id);
 
   var targets = answerMetas.filter(function (m) {
     return !m.del_flg && !existingIds[String(m.answer_id)];
@@ -339,7 +328,6 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
       if (marker === MARK.PERSON) return personVal;
       if (marker === MARK.TOTAL) return count > 0 ? sum : '';
       if (marker === MARK.AVERAGE) return count > 0 ? sum / count : '';
-      if (marker === MARK.ANSWER_ID) return meta.answer_id;
       return qTitleToValue.hasOwnProperty(marker) ? qTitleToValue[marker] : '';
     });
     newRows.push(row);
@@ -349,6 +337,7 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   if (newRows.length > 0) {
     var startRow = sheet.getLastRow() + 1;
     sheet.getRange(startRow, 1, newRows.length, headerRow.length).setValues(newRows);
+    appendSyncedIds(metaSheet, formConf.id, syncedMetas.map(function (m) { return m.answer_id; }));
   }
 
   if (targets.length > limited.length) {
@@ -367,6 +356,68 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   }
 
   return newRows.length;
+}
+
+/**
+ * 重複防止用の回答IDを記録する非表示シートを取得（無ければ作成）する。
+ * A列=フォームID、B列=回答ID の単純なログ形式。
+ */
+function getMetaSheet(ss) {
+  var sheet = ss.getSheetByName('_同期管理');
+  if (!sheet) {
+    sheet = ss.insertSheet('_同期管理');
+    sheet.getRange(1, 1, 1, 2).setValues([['form_id', 'answer_id']]);
+    sheet.hideSheet();
+  }
+  return sheet;
+}
+
+/**
+ * 指定フォームについて、既に反映済みの回答IDの集合を返す。
+ */
+function getSyncedIds(metaSheet, formId) {
+  var ids = {};
+  var lastRow = metaSheet.getLastRow();
+  if (lastRow > 1) {
+    metaSheet.getRange(2, 1, lastRow - 1, 2).getValues().forEach(function (r) {
+      if (String(r[0]) === String(formId)) ids[String(r[1])] = true;
+    });
+  }
+  return ids;
+}
+
+/**
+ * 反映済みの回答IDを非表示シートに追記する。
+ */
+function appendSyncedIds(metaSheet, formId, answerIds) {
+  if (answerIds.length === 0) return;
+  var startRow = metaSheet.getLastRow() + 1;
+  var rows = answerIds.map(function (id) { return [formId, id]; });
+  metaSheet.getRange(startRow, 1, rows.length, 2).setValues(rows);
+}
+
+/**
+ * 回答IDをシートの列で管理していた旧バージョンからの移行処理。
+ * その列（ノートが LEGACY_ANSWER_ID_MARK、または見出しが「回答ID」）に残っている値を
+ * 非表示シートに一度だけ取り込み、以後はそのシートの列を一切触らない
+ * （ユーザーが自由に使えるようにするため）。
+ */
+function migrateLegacyIdColumn(sheet, metaSheet, formId) {
+  if (Object.keys(getSyncedIds(metaSheet, formId)).length > 0) return; // 移行済み
+  var lastCol = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow();
+  if (lastCol === 0 || lastRow <= 1) return;
+
+  var notes = sheet.getRange(1, 1, 1, lastCol).getNotes()[0];
+  var texts = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idColIndex = notes.indexOf(LEGACY_ANSWER_ID_MARK);
+  if (idColIndex === -1) idColIndex = texts.indexOf('回答ID');
+  if (idColIndex === -1) return;
+
+  var ids = sheet.getRange(2, idColIndex + 1, lastRow - 1, 1).getValues()
+    .map(function (r) { return r[0]; })
+    .filter(function (v) { return v !== '' && v !== null; });
+  appendSyncedIds(metaSheet, formId, ids);
 }
 
 /**
