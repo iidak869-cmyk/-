@@ -430,9 +430,27 @@ if (Test-IsLoginPage $html) {
 Write-Host '表示順を「グループ順」に切り替えます...'
 $html = Invoke-PostBack -Url $ScheduleUrl -Html $html -EventTarget 'ddlSort' -Set @{ 'ddlSort' = '2' }
 
-# 3) グループ一覧から対象グループを探して絞り込み
-$groups = @(Get-GroupCheckboxes $html)
-$target = $groups | Where-Object { $_.Label -like ("*{0}*" -f $GroupName) } | Select-Object -First 1
+# 3) グループ一覧から対象グループを探す
+#    「自分のチェックのみ」モードでは登録済みグループしか一覧に出ないため、
+#    見つからない場合は表示モードを切り替えながら探す
+$displayModes = @(
+    @{ Name = '(現在の表示モード)';           Target = '' },
+    @{ Name = '全表示（未チェックも表示）'; Target = 'rblGroupDisp$1' },
+    @{ Name = '全データ表示';               Target = 'rblGroupDisp$0' }
+)
+$target = $null
+$foundLabels = @()
+foreach ($mode in $displayModes) {
+    if ($mode.Target) {
+        Write-Host ("グループ一覧に「{0}」が無いため、表示モードを「{1}」に切り替えます..." -f $GroupName, $mode.Name)
+        $html = Invoke-PostBack -Url $ScheduleUrl -Html $html `
+            -EventTarget $mode.Target -Set @{ 'rblGroupDisp' = $mode.Name }
+    }
+    $groups = @(Get-GroupCheckboxes $html)
+    $foundLabels += ($groups | ForEach-Object { $_.Label })
+    $target = $groups | Where-Object { $_.Label -like ("*{0}*" -f $GroupName) } | Select-Object -First 1
+    if ($target) { break }
+}
 
 if ($target) {
     Write-Host ("グループ「{0}」({1}) で絞り込みます..." -f $target.Label, $target.Value)
@@ -441,8 +459,8 @@ if ($target) {
         -Set @{ $target.Field = $target.Value } `
         -SubmitName 'btnSearch' -SubmitValue '絞込実行'
 } else {
-    $labels = ($groups | ForEach-Object { $_.Label }) -join ' / '
-    Write-Warning ("グループ「{0}」がグループ一覧に見つかりませんでした。見つかったグループ: {1}" -f $GroupName, $labels)
+    $labels = ($foundLabels | Select-Object -Unique) -join ' / '
+    Write-Warning ("グループ「{0}」がどの表示モードでも見つかりませんでした。見つかったグループ: {1}" -f $GroupName, $labels)
     Write-Warning '絞り込みなしで続行します。ダンプを保存するので共有してください。'
     Save-Dump -Html $html -Path $DumpPath
 }
