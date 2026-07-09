@@ -32,6 +32,12 @@ param(
     # 抜き出したいグループ名
     [string]$GroupName = 'CS課',
 
+    # DシステムのログインID (未指定なら環境変数 DSYSTEM_USER を使用)
+    [string]$UserId = $env:DSYSTEM_USER,
+
+    # Dシステムのログインパスワード (未指定なら環境変数 DSYSTEM_PASSWORD を使用)
+    [string]$Password = $env:DSYSTEM_PASSWORD,
+
     # Slack Incoming Webhook URL (未指定なら環境変数 SLACK_WEBHOOK_URL を使用)
     [string]$WebhookUrl = $env:SLACK_WEBHOOK_URL,
 
@@ -64,16 +70,16 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
 
-function Get-PageHtml {
-    param([string]$Url)
-    # 社内のASP.NETサイトは Windows統合認証 が多いため、実行ユーザーの資格情報を使う
-    $res = Invoke-WebRequest -Uri $Url -UseDefaultCredentials -UseBasicParsing
+# ログイン状態 (Cookie) を保持するセッション
+$script:WebSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 
-    $bytes = $res.RawContentStream.ToArray()
+function Get-ResponseText {
+    param($Res)
+    $bytes = $Res.RawContentStream.ToArray()
 
     # 文字コードを Content-Type ヘッダー → HTML内 meta → UTF-8 の順で判定
     $charset = $null
-    $ct = $res.Headers['Content-Type']
+    $ct = $Res.Headers['Content-Type']
     if ($ct -and $ct -match 'charset=([\w\-]+)') { $charset = $Matches[1] }
     if (-not $charset) {
         $ascii = [Text.Encoding]::ASCII.GetString($bytes)
@@ -84,6 +90,70 @@ function Get-PageHtml {
         try { $enc = [Text.Encoding]::GetEncoding($charset) } catch { }
     }
     return $enc.GetString($bytes)
+}
+
+function Get-PageHtml {
+    param([string]$Url)
+    $res = Invoke-WebRequest -Uri $Url -UseBasicParsing -WebSession $script:WebSession
+    return Get-ResponseText $res
+}
+
+function Test-IsLoginPage {
+    param([string]$Html)
+    return ($Html -match 'type="password"' -or $Html -match 'Login Page')
+}
+
+function Get-HiddenFields {
+    # __VIEWSTATE などASP.NETの隠しフィールドを集める (ログインPOSTに必須)
+    param([string]$Html)
+    $fields = @{}
+    foreach ($m in [regex]::Matches($Html, '(?is)<input[^>]+type="hidden"[^>]*>')) {
+        $tag = $m.Value
+        if ($tag -match 'name="([^"]+)"') {
+            $name = $Matches[1]
+            $value = ''
+            if ($tag -match 'value="([^"]*)"') { $value = $Matches[1] }
+            $fields[$name] = [System.Net.WebUtility]::HtmlDecode($value)
+        }
+    }
+    return $fields
+}
+
+function Invoke-DSystemLogin {
+    param([string]$PageUrl, [string]$Html, [string]$UserId, [string]$Password)
+
+    # フォームの action 属性からログインPOST先URLを求める
+    $action = './Default.aspx'
+    if ($Html -match '(?is)<form[^>]+action="([^"]+)"') {
+        $action = [System.Net.WebUtility]::HtmlDecode($Matches[1])
+    }
+    $postUrl = (New-Object System.Uri((New-Object System.Uri($PageUrl)), $action)).AbsoluteUri
+
+    # ID・パスワード・ログインボタンの入力欄名をHTMLから自動検出 (取れなければ既知の名前)
+    $userField = 'ctl00$ContentPlaceHolder1$txtUserID'
+    $passField = 'ctl00$ContentPlaceHolder1$txtUserPass'
+    $btnField  = 'ctl00$ContentPlaceHolder1$btnLogin'
+    $btnValue  = 'ログイン'
+    if ($Html -match '(?is)<input\s+name="([^"]+)"[^>]*type="text"')     { $userField = $Matches[1] }
+    if ($Html -match '(?is)<input\s+name="([^"]+)"[^>]*type="password"') { $passField = $Matches[1] }
+    if ($Html -match '(?is)<input\s+type="submit"\s+name="([^"]+)"\s+value="([^"]*)"') {
+        $btnField = $Matches[1]
+        $btnValue = [System.Net.WebUtility]::HtmlDecode($Matches[2])
+    }
+
+    $fields = Get-HiddenFields $Html
+    $fields[$userField] = $UserId
+    $fields[$passField] = $Password
+    $fields[$btnField]  = $btnValue
+
+    $body = (@($fields.GetEnumerator() | ForEach-Object {
+        '{0}={1}' -f [Uri]::EscapeDataString($_.Key), [Uri]::EscapeDataString([string]$_.Value)
+    })) -join '&'
+
+    $res = Invoke-WebRequest -Uri $postUrl -Method Post -Body $body `
+        -ContentType 'application/x-www-form-urlencoded' `
+        -UseBasicParsing -WebSession $script:WebSession
+    return Get-ResponseText $res
 }
 
 function ConvertFrom-HtmlText {
@@ -229,6 +299,21 @@ function Send-SlackMessage {
 
 Write-Host ("ページ取得中: {0}" -f $ScheduleUrl)
 $html = Get-PageHtml -Url $ScheduleUrl
+
+if (Test-IsLoginPage $html) {
+    if (-not $UserId -or -not $Password) {
+        throw 'Dシステムへのログインが必要です。-UserId と -Password (または環境変数 DSYSTEM_USER / DSYSTEM_PASSWORD) を指定してください。'
+    }
+    Write-Host 'ログインページが表示されたため、ログインします...'
+    [void](Invoke-DSystemLogin -PageUrl $ScheduleUrl -Html $html -UserId $UserId -Password $Password)
+
+    # ログイン後のCookieを使ってスケジュールページを取り直す
+    $html = Get-PageHtml -Url $ScheduleUrl
+    if (Test-IsLoginPage $html) {
+        throw 'ログインに失敗しました。ログインIDとパスワードが正しいか確認してください。'
+    }
+    Write-Host 'ログイン成功。'
+}
 
 if ($DumpOnly) {
     [IO.File]::WriteAllText($DumpPath, $html, [Text.Encoding]::UTF8)

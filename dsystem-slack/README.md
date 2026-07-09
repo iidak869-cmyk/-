@@ -64,6 +64,8 @@ schtasks /Create /TN "DSystemScheduleToSlack" /SC DAILY /ST 08:30 ^
 |---|---|---|
 | `-ScheduleUrl` | `http://win2012sv-aws/DSystem/Schedule.aspx` | 取得対象のURL。グループ指定のクエリが必要な場合はここに含める |
 | `-GroupName` | `CS課` | 投稿メッセージの見出しに使うグループ名 |
+| `-UserId` | 環境変数 `DSYSTEM_USER` | DシステムのログインID |
+| `-Password` | 環境変数 `DSYSTEM_PASSWORD` | Dシステムのログインパスワード |
 | `-WebhookUrl` | 環境変数 `SLACK_WEBHOOK_URL` | Slack Incoming Webhook のURL |
 | `-DumpOnly` | - | ページHTMLを保存するだけで終了（構造確認用） |
 | `-DumpPath` | スクリプトと同じフォルダの `Schedule_dump.html` | ダンプ保存先 |
@@ -72,8 +74,9 @@ schtasks /Create /TN "DSystemScheduleToSlack" /SC DAILY /ST 08:30 ^
 
 ## 動作の仕組み
 
-1. `Invoke-WebRequest -UseDefaultCredentials` でスケジュールページを取得
-   （社内ASP.NETサイトで一般的なWindows統合認証を想定。実行ユーザーの資格情報で認証されます）
+1. スケジュールページにアクセスし、ログイン画面が返ってきた場合は
+   `-UserId` / `-Password` を使ってDシステムに自動ログイン（ASP.NETのフォーム認証。
+   `__VIEWSTATE` 等の隠しフィールドを引き継いでログインフォームをPOSTします）
 2. HTML内から「ヘッダー行に日付が並び、先頭列にメンバー名がある表」を自動検出
 3. 今日の日付の列（`-AllDays` 指定時は全列）をメンバーごとに整形
 4. Incoming Webhook 経由で #dsystem-cs-schedule に投稿（長文は自動分割）
