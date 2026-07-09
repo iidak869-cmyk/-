@@ -204,6 +204,7 @@ function Invoke-PostBack {
         [string]$Html,
         [hashtable]$Set = @{},
         [string]$EventTarget = '',
+        [string]$EventArgument = '',
         [string]$SubmitName = '',
         [string]$SubmitValue = '',
         [string[]]$RemoveLike = @()
@@ -216,7 +217,7 @@ function Invoke-PostBack {
     }
     foreach ($k in $Set.Keys) { $fields[$k] = $Set[$k] }
     $fields['__EVENTTARGET'] = $EventTarget
-    $fields['__EVENTARGUMENT'] = ''
+    $fields['__EVENTARGUMENT'] = $EventArgument
     if ($SubmitName) { $fields[$SubmitName] = $SubmitValue }
 
     $body = ConvertTo-FormBody $fields
@@ -265,20 +266,60 @@ function Invoke-DSystemLogin {
 # ---- Dシステム固有の処理 ------------------------------------------------------
 
 function Get-GroupCheckboxes {
-    # 左サイドバーのグループ絞り込みチェックボックス一覧を取得
+    # 左サイドバーのグループ絞り込みチェックボックス一覧 (チェック状態付き) を取得
     param([string]$Html)
     $list = @()
-    $pattern = "(?is)<input type='checkbox' name=""(cbGroup\d+)"" value=""(\d+)""[^>]*>([^<]*)</label>"
+    $pattern = "(?is)<input type='checkbox' name=""(cbGroup\d+)"" value=""(\d+)""([^>]*)>([^<]*)</label>"
     foreach ($m in [regex]::Matches($Html, $pattern)) {
-        $label = [System.Net.WebUtility]::HtmlDecode($m.Groups[3].Value)
+        $label = [System.Net.WebUtility]::HtmlDecode($m.Groups[4].Value)
         $label = ($label -replace '&nbsp;', ' ' -replace '[\s　]+', ' ').Trim()
         $list += ,@{
-            Field = $m.Groups[1].Value
-            Value = $m.Groups[2].Value
-            Label = $label
+            Field   = $m.Groups[1].Value
+            Value   = $m.Groups[2].Value
+            Checked = ($m.Groups[3].Value -match 'checked')
+            Label   = $label
         }
     }
     return $list
+}
+
+function Get-GroupState {
+    # 指定グループのチェック状態を返す ($true/$false、一覧に無ければ $null)
+    param([string]$Html, [string]$Value)
+    $m = [regex]::Match($Html, "(?is)<input type='checkbox' name=""cbGroup$Value"" value=""$Value""([^>]*)>")
+    if (-not $m.Success) { return $null }
+    return ($m.Groups[1].Value -match 'checked')
+}
+
+function Set-GroupCheck {
+    <#
+      グループのチェックON/OFFを切り替える。
+      画面のチェックボックスは fncGroupClick() → __doPostBack("GroupClick", "グループ番号,フラグ")
+      でサーバー側に記憶される方式のため、それをそのまま再現する。
+      フラグの意味 (現在の状態か新しい状態か) はサーバー実装次第なので、
+      1回目で変わらなければ逆のフラグでもう一度試し、結果をHTMLで検証する。
+    #>
+    param([string]$Url, [string]$Html, [string]$Value, [bool]$Desired)
+
+    $cur = Get-GroupState -Html $Html -Value $Value
+    if ($null -eq $cur) {
+        Write-Warning ("グループ番号 {0} のチェックボックスが画面に見つかりません。" -f $Value)
+        return $Html
+    }
+    if ($cur -eq $Desired) { return $Html }
+
+    $flagCurrent = 0; if ($cur) { $flagCurrent = 1 }
+    $h2 = Invoke-PostBack -Url $Url -Html $Html `
+        -EventTarget 'GroupClick' -EventArgument ("{0},{1}" -f $Value, $flagCurrent)
+    if ((Get-GroupState -Html $h2 -Value $Value) -eq $Desired) { return $h2 }
+
+    $flagDesired = 0; if ($Desired) { $flagDesired = 1 }
+    $h3 = Invoke-PostBack -Url $Url -Html $h2 `
+        -EventTarget 'GroupClick' -EventArgument ("{0},{1}" -f $Value, $flagDesired)
+    if ((Get-GroupState -Html $h3 -Value $Value) -eq $Desired) { return $h3 }
+
+    Write-Warning ("グループ番号 {0} のチェック状態を変更できませんでした。" -f $Value)
+    return $h3
 }
 
 function Get-DSystemSchedule {
@@ -430,37 +471,34 @@ if (Test-IsLoginPage $html) {
 Write-Host '表示順を「グループ順」に切り替えます...'
 $html = Invoke-PostBack -Url $ScheduleUrl -Html $html -EventTarget 'ddlSort' -Set @{ 'ddlSort' = '2' }
 
-# 3) グループ一覧から対象グループを探す
-#    「自分のチェックのみ」モードでは登録済みグループしか一覧に出ないため、
-#    見つからない場合は表示モードを切り替えながら探す
-$displayModes = @(
-    @{ Name = '(現在の表示モード)';           Target = '' },
-    @{ Name = '全表示（未チェックも表示）'; Target = 'rblGroupDisp$1' },
-    @{ Name = '全データ表示';               Target = 'rblGroupDisp$0' }
-)
-$target = $null
-$foundLabels = @()
-foreach ($mode in $displayModes) {
-    if ($mode.Target) {
-        Write-Host ("グループ一覧に「{0}」が無いため、表示モードを「{1}」に切り替えます..." -f $GroupName, $mode.Name)
-        $html = Invoke-PostBack -Url $ScheduleUrl -Html $html `
-            -EventTarget $mode.Target -Set @{ 'rblGroupDisp' = $mode.Name }
-    }
-    $groups = @(Get-GroupCheckboxes $html)
-    $foundLabels += ($groups | ForEach-Object { $_.Label })
-    $target = $groups | Where-Object { $_.Label -like ("*{0}*" -f $GroupName) } | Select-Object -First 1
-    if ($target) { break }
-}
+# 3) 「全表示（未チェックも表示）」に切り替えて全グループの一覧を出し、対象グループを探す
+#    (「自分のチェックのみ」モードでは登録済みグループしか一覧に出ないため)
+Write-Host '表示モードを「全表示（未チェックも表示）」に切り替えます...'
+$html = Invoke-PostBack -Url $ScheduleUrl -Html $html `
+    -EventTarget 'rblGroupDisp$1' -Set @{ 'rblGroupDisp' = '全表示（未チェックも表示）' }
+
+$groups = @(Get-GroupCheckboxes $html)
+$target = $groups | Where-Object { $_.Label -like ("*{0}*" -f $GroupName) } | Select-Object -First 1
 
 if ($target) {
-    Write-Host ("グループ「{0}」({1}) で絞り込みます..." -f $target.Label, $target.Value)
+    # 4) 対象グループ以外のチェックを外し、対象グループにチェックを入れる
+    #    (チェックは GroupClick ポストバックでサーバー側に記憶される)
+    foreach ($g in $groups) {
+        if ($g.Value -ne $target.Value -and $g.Checked) {
+            Write-Host ("グループ「{0}」({1}) のチェックを外します..." -f $g.Label, $g.Value)
+            $html = Set-GroupCheck -Url $ScheduleUrl -Html $html -Value $g.Value -Desired:$false
+        }
+    }
+    Write-Host ("グループ「{0}」({1}) にチェックを入れます..." -f $target.Label, $target.Value)
+    $html = Set-GroupCheck -Url $ScheduleUrl -Html $html -Value $target.Value -Desired:$true
+
+    # 5) 「自分のチェックのみ」に戻すと、チェック済みグループ (=対象グループ) だけの表示になる
+    Write-Host '表示モードを「自分のチェックのみ」に戻します...'
     $html = Invoke-PostBack -Url $ScheduleUrl -Html $html `
-        -RemoveLike @('cbGroup*') `
-        -Set @{ $target.Field = $target.Value } `
-        -SubmitName 'btnSearch' -SubmitValue '絞込実行'
+        -EventTarget 'rblGroupDisp$2' -Set @{ 'rblGroupDisp' = '自分のチェックのみ' }
 } else {
-    $labels = ($foundLabels | Select-Object -Unique) -join ' / '
-    Write-Warning ("グループ「{0}」がどの表示モードでも見つかりませんでした。見つかったグループ: {1}" -f $GroupName, $labels)
+    $labels = (($groups | ForEach-Object { $_.Label }) | Select-Object -Unique) -join ' / '
+    Write-Warning ("グループ「{0}」がグループ一覧に見つかりませんでした。見つかったグループ: {1}" -f $GroupName, $labels)
     Write-Warning '絞り込みなしで続行します。ダンプを保存するので共有してください。'
     Save-Dump -Html $html -Path $DumpPath
 }
