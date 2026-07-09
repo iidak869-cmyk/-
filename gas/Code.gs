@@ -255,6 +255,22 @@ function syncFormToSheet(ss, formConf, auth, deleteAfterSync) {
   }
 
   var idColIndex = markerRow.indexOf(MARK.ANSWER_ID);
+  if (idColIndex === -1) {
+    headerRow.push('回答ID');
+    markerRow.push(MARK.ANSWER_ID);
+    idColIndex = markerRow.length - 1;
+  }
+
+  // 回答ID列より右（ユーザーが独自に追加した列など）は絶対に書き込まない。
+  // 過去のバグでその範囲のノートが誤って回答ID扱いになっていた場合に備え、消しておく。
+  for (var j = idColIndex + 1; j < markerRow.length; j++) {
+    if (markerRow[j] === MARK.ANSWER_ID) {
+      sheet.getRange(1, j + 1).clearNote();
+    }
+  }
+  headerRow = headerRow.slice(0, idColIndex + 1);
+  markerRow = markerRow.slice(0, idColIndex + 1);
+
   sheet.hideColumns(idColIndex + 1);
 
   var existingIds = {};
