@@ -38,8 +38,8 @@ param(
     # ページのHTMLを保存するだけで終了する (構造確認用)
     [switch]$DumpOnly,
 
-    # HTMLダンプの保存先
-    [string]$DumpPath = (Join-Path $PSScriptRoot 'Schedule_dump.html'),
+    # HTMLダンプの保存先 (未指定ならスクリプトと同じフォルダに Schedule_dump.html)
+    [string]$DumpPath = '',
 
     # Slackに投稿せず、整形結果をコンソールに表示する (動作確認用)
     [switch]$NoPost,
@@ -49,6 +49,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ダンプ保存先が未指定なら、スクリプトのあるフォルダ (取れなければ現在のフォルダ) に保存
+if (-not $DumpPath) {
+    $baseDir = $PSScriptRoot
+    if (-not $baseDir -and $PSCommandPath) { $baseDir = Split-Path -Parent $PSCommandPath }
+    if (-not $baseDir) { $baseDir = (Get-Location).Path }
+    $DumpPath = Join-Path $baseDir 'Schedule_dump.html'
+}
 
 # 古い .NET 既定 (TLS1.0) のままだと Slack への HTTPS 接続に失敗するため TLS1.2 を有効化
 try {
