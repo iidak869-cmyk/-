@@ -118,6 +118,19 @@ function Test-IsLoginPage {
 
 # ---- ASP.NET フォーム操作 ----------------------------------------------------
 
+function ConvertTo-FormBody {
+    # フォーム値を application/x-www-form-urlencoded 形式に変換する
+    # ([Uri]::EscapeDataString は約32,000文字の上限があり巨大な __VIEWSTATE で失敗するため WebUtility を使用)
+    param($Fields)
+    $pairs = @()
+    foreach ($e in $Fields.GetEnumerator()) {
+        $pairs += ('{0}={1}' -f `
+            [System.Net.WebUtility]::UrlEncode([string]$e.Key), `
+            [System.Net.WebUtility]::UrlEncode([string]$e.Value))
+    }
+    return ($pairs -join '&')
+}
+
 function Get-HiddenFields {
     # __VIEWSTATE などASP.NETの隠しフィールドを集める
     param([string]$Html)
@@ -206,11 +219,7 @@ function Invoke-PostBack {
     $fields['__EVENTARGUMENT'] = ''
     if ($SubmitName) { $fields[$SubmitName] = $SubmitValue }
 
-    $pairs = @()
-    foreach ($e in $fields.GetEnumerator()) {
-        $pairs += ('{0}={1}' -f [Uri]::EscapeDataString([string]$e.Key), [Uri]::EscapeDataString([string]$e.Value))
-    }
-    $body = $pairs -join '&'
+    $body = ConvertTo-FormBody $fields
 
     $res = Invoke-WebRequest -Uri $Url -Method Post -Body $body `
         -ContentType 'application/x-www-form-urlencoded' `
@@ -245,11 +254,7 @@ function Invoke-DSystemLogin {
     $fields[$passField] = $Password
     $fields[$btnField]  = $btnValue
 
-    $pairs = @()
-    foreach ($e in $fields.GetEnumerator()) {
-        $pairs += ('{0}={1}' -f [Uri]::EscapeDataString([string]$e.Key), [Uri]::EscapeDataString([string]$e.Value))
-    }
-    $body = $pairs -join '&'
+    $body = ConvertTo-FormBody $fields
 
     $res = Invoke-WebRequest -Uri $postUrl -Method Post -Body $body `
         -ContentType 'application/x-www-form-urlencoded' `
