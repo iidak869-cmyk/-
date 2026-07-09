@@ -1,24 +1,26 @@
 ﻿<#
 .SYNOPSIS
-    Dシステムのスケジュールページ (Schedule.aspx) から CS課メンバーの予定を取得し、
+    Dシステム (D-System 業務カレンダー) から CS課メンバーの予定を取得し、
     Slack の Incoming Webhook に投稿します。
 
 .DESCRIPTION
     社内ネットワーク上の Windows PC / サーバーで実行してください
     (win2012sv-aws は社外・クラウドからは到達できません)。
 
-    使い方の流れ:
-      1) まず -DumpOnly でページのHTMLを保存し、表示内容を確認する
-         .\Export-DSystemSchedule.ps1 -DumpOnly
-      2) -NoPost で解析結果をコンソールに表示して確認する
-         .\Export-DSystemSchedule.ps1 -NoPost
-      3) 問題なければ Webhook URL を指定して実際に投稿する
-         .\Export-DSystemSchedule.ps1 -WebhookUrl 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
+    ブラウザでの操作をそのまま再現します:
+      1) ログインページに ID/パスワードでログイン
+      2) 表示順を「グループ順」に切り替え
+      3) 左側のグループ一覧から対象グループ (CS課) だけにチェックして「絞込実行」
+      4) スケジュール表 (sTable) を解析して、日付ごと・人ごとに整形
+      5) Slack Incoming Webhook へ投稿 (既定は今日の分のみ)
 
-    スケジュール表の解析は「ヘッダー行に日付、先頭列にメンバー名が並ぶ表」という
-    一般的なグループウェアの週表示レイアウトを想定した汎用ロジックです。
-    Dシステムの実際のHTML構造と合わない場合は解析に失敗し、HTMLダンプを保存して
-    終了するので、そのダンプファイルを元にパーサーを調整してください。
+    使い方:
+      # 動作確認 (Slackに送らずコンソール表示)
+      .\Export-DSystemSchedule.ps1 -NoPost -UserId "xxxx" -Password "yyyy"
+
+      # 本番 (Slackに投稿)
+      .\Export-DSystemSchedule.ps1 -UserId "xxxx" -Password "yyyy" `
+          -WebhookUrl 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
 
 .NOTES
     PowerShell 3.0 以降 (Windows Server 2012 標準) で動作するよう記述しています。
@@ -26,10 +28,10 @@
 #>
 [CmdletBinding()]
 param(
-    # DシステムのスケジュールページURL (グループ指定のクエリが必要なら付けてください)
+    # DシステムのスケジュールページURL
     [string]$ScheduleUrl = 'http://win2012sv-aws/DSystem/Schedule.aspx',
 
-    # 抜き出したいグループ名
+    # 抜き出したいグループ名 (左サイドバーのグループ一覧の表記)
     [string]$GroupName = 'CS課',
 
     # DシステムのログインID (未指定なら環境変数 DSYSTEM_USER を使用)
@@ -41,7 +43,7 @@ param(
     # Slack Incoming Webhook URL (未指定なら環境変数 SLACK_WEBHOOK_URL を使用)
     [string]$WebhookUrl = $env:SLACK_WEBHOOK_URL,
 
-    # ページのHTMLを保存するだけで終了する (構造確認用)
+    # 絞り込み後のページHTMLを保存するだけで終了する (構造確認用)
     [switch]$DumpOnly,
 
     # HTMLダンプの保存先 (未指定ならスクリプトと同じフォルダに Schedule_dump.html)
@@ -73,6 +75,8 @@ try {
 # ログイン状態 (Cookie) を保持するセッション
 $script:WebSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 
+# ---- HTTP / HTML ユーティリティ ---------------------------------------------
+
 function Get-ResponseText {
     param($Res)
     $bytes = $Res.RawContentStream.ToArray()
@@ -98,13 +102,24 @@ function Get-PageHtml {
     return Get-ResponseText $res
 }
 
+function ConvertFrom-HtmlText {
+    param([string]$Html)
+    $t = $Html -replace '(?i)<br\s*/?>', "`n"
+    $t = $t -replace '(?s)<[^>]+>', ''
+    $t = [System.Net.WebUtility]::HtmlDecode($t)
+    $lines = $t -split "`n" | ForEach-Object { ($_ -replace '[\s　]+', ' ').Trim() } | Where-Object { $_ }
+    return ($lines -join "`n")
+}
+
 function Test-IsLoginPage {
     param([string]$Html)
     return ($Html -match 'type="password"' -or $Html -match 'Login Page')
 }
 
+# ---- ASP.NET フォーム操作 ----------------------------------------------------
+
 function Get-HiddenFields {
-    # __VIEWSTATE などASP.NETの隠しフィールドを集める (ログインPOSTに必須)
+    # __VIEWSTATE などASP.NETの隠しフィールドを集める
     param([string]$Html)
     $fields = @{}
     foreach ($m in [regex]::Matches($Html, '(?is)<input[^>]+type="hidden"[^>]*>')) {
@@ -117,6 +132,90 @@ function Get-HiddenFields {
         }
     }
     return $fields
+}
+
+function Get-FormFields {
+    # ページ内フォームの現在値 (hidden / text / チェック済みradio / チェック済みcheckbox / select) を集める
+    param([string]$Html)
+    $fields = [ordered]@{}
+
+    foreach ($m in [regex]::Matches($Html, '(?is)<input[^>]*>')) {
+        $tag = $m.Value
+        if ($tag -notmatch 'name\s*=\s*["'']([^"'']+)["'']') { continue }
+        $name = $Matches[1]
+        $type = 'text'
+        if ($tag -match 'type\s*=\s*["'']([^"'']+)["'']') { $type = $Matches[1].ToLower() }
+        $value = ''
+        if ($tag -match 'value\s*=\s*["'']([^"'']*)["'']') {
+            $value = [System.Net.WebUtility]::HtmlDecode($Matches[1])
+        }
+        switch ($type) {
+            'hidden'   { $fields[$name] = $value }
+            'text'     { $fields[$name] = $value }
+            'radio'    { if ($tag -match '\bchecked\b') { $fields[$name] = $value } }
+            'checkbox' {
+                if ($tag -match '\bchecked\b') {
+                    if ($value) { $fields[$name] = $value } else { $fields[$name] = 'on' }
+                }
+            }
+            default { }  # submit / button / password などは含めない
+        }
+    }
+
+    foreach ($m in [regex]::Matches($Html, '(?is)<select[^>]+name\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</select>')) {
+        $name = $m.Groups[1].Value
+        $body = $m.Groups[2].Value
+        $val = ''
+        foreach ($om in [regex]::Matches($body, '(?is)<option([^>]*)>')) {
+            $attrs = $om.Groups[1].Value
+            if ($attrs -match '\bselected\b') {
+                if ($attrs -match 'value\s*=\s*["'']([^"'']*)["'']') { $val = $Matches[1] }
+                break
+            }
+        }
+        $fields[$name] = $val
+    }
+    return $fields
+}
+
+function Invoke-PostBack {
+    <#
+      現在のページ ($Html) のフォーム値を引き継いで POST し、応答HTMLを返す。
+      - $Set          : 上書き・追加するフィールド
+      - $EventTarget  : __doPostBack のターゲット (ドロップダウン変更など)
+      - $SubmitName / $SubmitValue : 押すボタン (絞込実行など)
+      - $RemoveLike   : 送信から除外するフィールド名パターン (checkbox のチェック外しに使用)
+    #>
+    param(
+        [string]$Url,
+        [string]$Html,
+        [hashtable]$Set = @{},
+        [string]$EventTarget = '',
+        [string]$SubmitName = '',
+        [string]$SubmitValue = '',
+        [string[]]$RemoveLike = @()
+    )
+    $fields = Get-FormFields $Html
+    foreach ($k in @($fields.Keys)) {
+        foreach ($pat in $RemoveLike) {
+            if ($k -like $pat) { $fields.Remove($k); break }
+        }
+    }
+    foreach ($k in $Set.Keys) { $fields[$k] = $Set[$k] }
+    $fields['__EVENTTARGET'] = $EventTarget
+    $fields['__EVENTARGUMENT'] = ''
+    if ($SubmitName) { $fields[$SubmitName] = $SubmitValue }
+
+    $pairs = @()
+    foreach ($e in $fields.GetEnumerator()) {
+        $pairs += ('{0}={1}' -f [Uri]::EscapeDataString([string]$e.Key), [Uri]::EscapeDataString([string]$e.Value))
+    }
+    $body = $pairs -join '&'
+
+    $res = Invoke-WebRequest -Uri $Url -Method Post -Body $body `
+        -ContentType 'application/x-www-form-urlencoded' `
+        -UseBasicParsing -WebSession $script:WebSession
+    return Get-ResponseText $res
 }
 
 function Invoke-DSystemLogin {
@@ -146,9 +245,11 @@ function Invoke-DSystemLogin {
     $fields[$passField] = $Password
     $fields[$btnField]  = $btnValue
 
-    $body = (@($fields.GetEnumerator() | ForEach-Object {
-        '{0}={1}' -f [Uri]::EscapeDataString($_.Key), [Uri]::EscapeDataString([string]$_.Value)
-    })) -join '&'
+    $pairs = @()
+    foreach ($e in $fields.GetEnumerator()) {
+        $pairs += ('{0}={1}' -f [Uri]::EscapeDataString([string]$e.Key), [Uri]::EscapeDataString([string]$e.Value))
+    }
+    $body = $pairs -join '&'
 
     $res = Invoke-WebRequest -Uri $postUrl -Method Post -Body $body `
         -ContentType 'application/x-www-form-urlencoded' `
@@ -156,116 +257,116 @@ function Invoke-DSystemLogin {
     return Get-ResponseText $res
 }
 
-function ConvertFrom-HtmlText {
+# ---- Dシステム固有の処理 ------------------------------------------------------
+
+function Get-GroupCheckboxes {
+    # 左サイドバーのグループ絞り込みチェックボックス一覧を取得
     param([string]$Html)
-    $t = $Html -replace '(?i)<br\s*/?>', "`n"
-    $t = $t -replace '(?s)<[^>]+>', ''
-    $t = [System.Net.WebUtility]::HtmlDecode($t)
-    $lines = $t -split "`n" | ForEach-Object { ($_ -replace '[\s ]+', ' ').Trim() } | Where-Object { $_ }
-    return ($lines -join "`n")
-}
-
-function Get-TableMatches { param([string]$Html)
-    [regex]::Matches($Html, '(?is)<table[^>]*>.*?</table>') | ForEach-Object { $_.Value }
-}
-function Get-RowMatches { param([string]$TableHtml)
-    [regex]::Matches($TableHtml, '(?is)<tr[^>]*>.*?</tr>') | ForEach-Object { $_.Value }
-}
-function Get-CellTexts { param([string]$RowHtml)
-    [regex]::Matches($RowHtml, '(?is)<t[dh][^>]*>(.*?)</t[dh]>') |
-        ForEach-Object { ConvertFrom-HtmlText $_.Groups[1].Value }
-}
-
-# 「7/9」「7月9日」「07/09(木)」などの日付表記にマッチ
-$script:DatePattern = '(?<m>\d{1,2})\s*[/月]\s*(?<d>\d{1,2})'
-
-function Find-ScheduleTable {
-    <#
-      ヘッダー行 (最初の数行のいずれか) に日付らしきセルが2つ以上並ぶ表を
-      スケジュール表とみなし、@{ Dates = ...; Members = ... } を返す。
-    #>
-    param([string]$Html)
-
-    foreach ($table in (Get-TableMatches $Html)) {
-        $rows = @(Get-RowMatches $table)
-        if ($rows.Count -lt 2) { continue }
-
-        $headerIndex = -1
-        $dates = @()
-        for ($i = 0; $i -lt [Math]::Min(3, $rows.Count); $i++) {
-            $cells = @(Get-CellTexts $rows[$i])
-            $dateCells = @($cells | Where-Object { $_ -match $script:DatePattern })
-            if ($dateCells.Count -ge 2) {
-                $headerIndex = $i
-                $dates = $cells
-                break
-            }
-        }
-        if ($headerIndex -lt 0) { continue }
-
-        # ヘッダー内で日付が始まる列位置 (それより前は名前などの固定列)
-        $firstDateCol = -1
-        for ($c = 0; $c -lt $dates.Count; $c++) {
-            if ($dates[$c] -match $script:DatePattern) { $firstDateCol = $c; break }
-        }
-
-        $members = @()
-        for ($r = $headerIndex + 1; $r -lt $rows.Count; $r++) {
-            $cells = @(Get-CellTexts $rows[$r])
-            if ($cells.Count -le $firstDateCol) { continue }
-            $name = ($cells[0..([Math]::Max(0, $firstDateCol - 1))] -join ' ').Trim()
-            if (-not $name) { continue }
-            $members += ,@{
-                Name    = $name
-                Entries = @($cells[$firstDateCol..($cells.Count - 1)])
-            }
-        }
-        if ($members.Count -eq 0) { continue }
-
-        return @{
-            DateHeaders  = @($dates[$firstDateCol..($dates.Count - 1)])
-            Members      = $members
+    $list = @()
+    $pattern = "(?is)<input type='checkbox' name=""(cbGroup\d+)"" value=""(\d+)""[^>]*>([^<]*)</label>"
+    foreach ($m in [regex]::Matches($Html, $pattern)) {
+        $label = [System.Net.WebUtility]::HtmlDecode($m.Groups[3].Value)
+        $label = ($label -replace '&nbsp;', ' ' -replace '[\s　]+', ' ').Trim()
+        $list += ,@{
+            Field = $m.Groups[1].Value
+            Value = $m.Groups[2].Value
+            Label = $label
         }
     }
-    return $null
+    return $list
+}
+
+function Get-DSystemSchedule {
+    # sTable (スケジュール表) を解析して日付ごとの予定リストを返す
+    param([string]$Html)
+
+    $m = [regex]::Match($Html, '(?is)<table id="sTable".*?</table>')
+    if (-not $m.Success) { return $null }
+    $table = $m.Value
+
+    # ヘッダー <th> から日付列を取得 (例: "2026/07/09 (木)\n32件")
+    $days = @()
+    foreach ($th in [regex]::Matches($table, '(?is)<th[^>]*>(.*?)</th>')) {
+        $text = ConvertFrom-HtmlText $th.Groups[1].Value
+        if ($text -match '(\d{4})/(\d{1,2})/(\d{1,2})') {
+            $days += ,@{
+                Year  = [int]$Matches[1]
+                Month = [int]$Matches[2]
+                Day   = [int]$Matches[3]
+                Label = ($text -replace "`n", '・')
+                Items = @()
+            }
+        }
+    }
+    if ($days.Count -eq 0) { return $null }
+
+    # データ行の <td> (日付列と同順) から <li> を抜き出す
+    $tds = @([regex]::Matches($table, '(?is)<td[^>]*>(.*?)</td>'))
+    for ($i = 0; $i -lt [Math]::Min($tds.Count, $days.Count); $i++) {
+        $items = @()
+        foreach ($li in [regex]::Matches($tds[$i].Groups[1].Value, '(?is)<li[^>]*>(.*?)</li>')) {
+            $t = ConvertFrom-HtmlText $li.Groups[1].Value
+            if ($t) { $items += ($t -replace "`n", ' ') }
+        }
+        $days[$i].Items = $items
+    }
+    return $days
+}
+
+function Split-PersonItem {
+    # 予定1件のテキストを「名前」と「内容」に分ける
+    # 例: "山下 毎日業務 録音格納" → 山下 / 毎日業務 録音格納
+    #     "伊藤そ★1000 Cytekiサポート" → 伊藤そ / ★1000 Cytekiサポート
+    param([string]$Item)
+    if ($Item -match '^([^\s　★]{1,10})[\s　]*(★.*|[\s　].*)$') {
+        $name = $Matches[1]
+        $body = $Matches[2].Trim()
+        if ($body) { return @($name, $body) }
+    }
+    if ($Item -match '^([^\s　★]{1,10})$') { return @($Matches[1], '(タイトルなし)') }
+    return @('（グループ共通）', $Item)
 }
 
 function Build-SlackText {
-    param($Schedule, [datetime]$Today, [bool]$IncludeAllDays, [string]$GroupName)
+    param($Days, [datetime]$Today, [bool]$IncludeAllDays, [string]$GroupName)
 
-    $headers = @($Schedule.DateHeaders)
-
-    # 投稿対象の列を決める (既定: 今日の日付列。見つからなければ全列)
-    $targetCols = @()
+    # 投稿対象の日付列 (既定: 今日。見つからなければ全列)
+    $targets = @()
     if (-not $IncludeAllDays) {
-        for ($c = 0; $c -lt $headers.Count; $c++) {
-            if ($headers[$c] -match $script:DatePattern) {
-                if ([int]$Matches['m'] -eq $Today.Month -and [int]$Matches['d'] -eq $Today.Day) {
-                    $targetCols += $c
-                }
-            }
-        }
+        $targets = @($Days | Where-Object {
+            $_.Year -eq $Today.Year -and $_.Month -eq $Today.Month -and $_.Day -eq $Today.Day
+        })
     }
-    if ($targetCols.Count -eq 0) { $targetCols = @(0..($headers.Count - 1)) }
+    if ($targets.Count -eq 0) { $targets = @($Days) }
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine(("*【{0} スケジュール】{1}*" -f $GroupName, $Today.ToString('yyyy/MM/dd (ddd)')))
+    [void]$sb.AppendLine(("*【{0} スケジュール】*" -f $GroupName))
 
-    foreach ($col in $targetCols) {
-        if ($targetCols.Count -gt 1) {
-            [void]$sb.AppendLine('')
-            [void]$sb.AppendLine(("*■ {0}*" -f $headers[$col]))
+    foreach ($day in $targets) {
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine(("*■ {0}*" -f $day.Label))
+
+        if ($day.Items.Count -eq 0) {
+            [void]$sb.AppendLine('  (予定なし)')
+            continue
         }
-        foreach ($m in $Schedule.Members) {
-            $entry = ''
-            if ($col -lt $m.Entries.Count) { $entry = $m.Entries[$col] }
-            [void]$sb.AppendLine(("*{0}*" -f $m.Name))
-            if ($entry) {
-                foreach ($line in ($entry -split "`n")) {
-                    [void]$sb.AppendLine(("  ・{0}" -f $line))
-                }
-            } else {
-                [void]$sb.AppendLine('  ・(予定なし)')
+
+        # 人ごとにまとめる (ページの表示順を維持)
+        $order = New-Object System.Collections.ArrayList
+        $byPerson = @{}
+        foreach ($item in $day.Items) {
+            $parts = Split-PersonItem $item
+            $name = $parts[0]; $body = $parts[1]
+            if (-not $byPerson.ContainsKey($name)) {
+                [void]$order.Add($name)
+                $byPerson[$name] = New-Object System.Collections.ArrayList
+            }
+            [void]$byPerson[$name].Add($body)
+        }
+        foreach ($name in $order) {
+            [void]$sb.AppendLine(("*{0}*" -f $name))
+            foreach ($body in $byPerson[$name]) {
+                [void]$sb.AppendLine(("　・{0}" -f $body))
             }
         }
     }
@@ -295,11 +396,17 @@ function Send-SlackMessage {
     }
 }
 
-# ---- メイン処理 -------------------------------------------------------------
+function Save-Dump {
+    param([string]$Html, [string]$Path)
+    [IO.File]::WriteAllText($Path, $Html, [Text.Encoding]::UTF8)
+}
+
+# ---- メイン処理 ---------------------------------------------------------------
 
 Write-Host ("ページ取得中: {0}" -f $ScheduleUrl)
 $html = Get-PageHtml -Url $ScheduleUrl
 
+# 1) 必要ならログイン
 if (Test-IsLoginPage $html) {
     if (-not $UserId -or -not $Password) {
         throw 'Dシステムへのログインが必要です。-UserId と -Password (または環境変数 DSYSTEM_USER / DSYSTEM_PASSWORD) を指定してください。'
@@ -307,7 +414,6 @@ if (Test-IsLoginPage $html) {
     Write-Host 'ログインページが表示されたため、ログインします...'
     [void](Invoke-DSystemLogin -PageUrl $ScheduleUrl -Html $html -UserId $UserId -Password $Password)
 
-    # ログイン後のCookieを使ってスケジュールページを取り直す
     $html = Get-PageHtml -Url $ScheduleUrl
     if (Test-IsLoginPage $html) {
         throw 'ログインに失敗しました。ログインIDとパスワードが正しいか確認してください。'
@@ -315,25 +421,50 @@ if (Test-IsLoginPage $html) {
     Write-Host 'ログイン成功。'
 }
 
+# 2) 表示順を「グループ順」に切り替え (グループの絞り込み一覧を出すため)
+Write-Host '表示順を「グループ順」に切り替えます...'
+$html = Invoke-PostBack -Url $ScheduleUrl -Html $html -EventTarget 'ddlSort' -Set @{ 'ddlSort' = '2' }
+
+# 3) グループ一覧から対象グループを探して絞り込み
+$groups = @(Get-GroupCheckboxes $html)
+$target = $groups | Where-Object { $_.Label -like ("*{0}*" -f $GroupName) } | Select-Object -First 1
+
+if ($target) {
+    Write-Host ("グループ「{0}」({1}) で絞り込みます..." -f $target.Label, $target.Value)
+    $html = Invoke-PostBack -Url $ScheduleUrl -Html $html `
+        -RemoveLike @('cbGroup*') `
+        -Set @{ $target.Field = $target.Value } `
+        -SubmitName 'btnSearch' -SubmitValue '絞込実行'
+} else {
+    $labels = ($groups | ForEach-Object { $_.Label }) -join ' / '
+    Write-Warning ("グループ「{0}」がグループ一覧に見つかりませんでした。見つかったグループ: {1}" -f $GroupName, $labels)
+    Write-Warning '絞り込みなしで続行します。ダンプを保存するので共有してください。'
+    Save-Dump -Html $html -Path $DumpPath
+}
+
 if ($DumpOnly) {
-    [IO.File]::WriteAllText($DumpPath, $html, [Text.Encoding]::UTF8)
+    Save-Dump -Html $html -Path $DumpPath
     Write-Host ("HTMLを保存しました: {0}" -f $DumpPath)
     Write-Host 'このファイルを開いて、スケジュール表の構造を確認してください。'
     exit 0
 }
 
-$schedule = Find-ScheduleTable -Html $html
-if (-not $schedule) {
-    [IO.File]::WriteAllText($DumpPath, $html, [Text.Encoding]::UTF8)
-    Write-Warning 'スケジュール表を自動検出できませんでした。'
+# 4) スケジュール表を解析
+$days = Get-DSystemSchedule -Html $html
+if (-not $days) {
+    Save-Dump -Html $html -Path $DumpPath
+    Write-Warning 'スケジュール表 (sTable) を検出できませんでした。'
     Write-Warning ("取得したHTMLを保存しました: {0}" -f $DumpPath)
     Write-Warning 'このHTMLダンプを共有してもらえれば、パーサーをページ構造に合わせて調整できます。'
     exit 1
 }
 
-Write-Host ("検出: メンバー {0} 名 / 日付列 {1} 列" -f $schedule.Members.Count, $schedule.DateHeaders.Count)
+$total = 0
+foreach ($d in $days) { $total += $d.Items.Count }
+Write-Host ("検出: {0} 日分 / 合計 {1} 件" -f $days.Count, $total)
 
-$text = Build-SlackText -Schedule $schedule -Today (Get-Date) -IncludeAllDays:$AllDays -GroupName $GroupName
+# 5) 整形して投稿
+$text = Build-SlackText -Days $days -Today (Get-Date) -IncludeAllDays:$AllDays -GroupName $GroupName
 
 if ($NoPost) {
     Write-Host '--- 投稿内容 (NoPostモード) ---'
