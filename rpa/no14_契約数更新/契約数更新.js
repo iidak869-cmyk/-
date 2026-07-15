@@ -42,13 +42,33 @@ const SELECTORS = {
 };
 
 // 報告詳細画面から転記する項目。
-// キー = プロダクト日報の列見出し、値 = 詳細画面上のセレクタ
-// TODO: 転記項目の一覧が判明したら追記する
+// キー = プロダクト日報「入六」シートの列見出し、値 = ほうこっくん詳細画面上のセレクタ
+// TODO: --探索 モードで詳細画面のセレクタを確認して埋める。
+//       ほうこっくん側に存在しない項目（手作業で埋める列）は削除してOK
 const FIELDS = {
-  "顧客名": "TODO_セレクタ",
   "契約日": "TODO_セレクタ",
-  // 例) "担当者": "#tantosha",
+  "管理番号": "TODO_セレクタ",
+  "顧客名": "TODO_セレクタ",
+  "営業担当者": "TODO_セレクタ",
+  "営業部署": "TODO_セレクタ",
+  "会社所在地": "TODO_セレクタ",
+  "一括orリース": "TODO_セレクタ",
+  "業種": "TODO_セレクタ",
+  "業種カテゴリ": "TODO_セレクタ",
+  "営業報告の添付画像": "TODO_セレクタ",
+  "格納": "TODO_セレクタ",
+  "Cyteki": "TODO_セレクタ",
+  "売上（グロス）": "TODO_セレクタ",
+  "売上（ネット②）": "TODO_セレクタ",
+  "クレカの有無": "TODO_セレクタ",
 };
+
+// スプシ（テスト反映先）の列順。A列からこの順に貼り付ける
+const SHEET_COLUMNS = [
+  "契約日", "管理番号", "顧客名", "営業担当者", "営業部署", "会社所在地",
+  "一括orリース", "業種", "業種カテゴリ", "営業報告の添付画像", "格納", "Cyteki",
+  "売上（グロス）", "売上（ネット②）", "クレカの有無",
+];
 // ============================================================
 
 const isExplore = process.argv.includes("--探索");
@@ -91,19 +111,22 @@ async function appendToExcel(records) {
   const ws = wb.getWorksheet(config.productNippo.sheetName);
   if (!ws) throw new Error(`シートが見つかりません: ${config.productNippo.sheetName}`);
 
-  // 1行目を見出しとして列位置を特定
-  const headerRow = ws.getRow(1);
+  // 見出し行（config.productNippo.headerRow）から列位置を特定
+  const headerRowNum = config.productNippo.headerRow ?? 1;
+  const headerRow = ws.getRow(headerRowNum);
   const colIndex = {};
   headerRow.eachCell((cell, col) => {
-    colIndex[String(cell.value).trim()] = col;
+    colIndex[String(cell.value ?? "").replace(/\s+/g, "")] = col;
   });
+
+  const norm = (s) => String(s ?? "").replace(/\s+/g, "");
 
   // 既存データから重複チェック用キーを収集
   const dedupeCols = config.productNippo.dedupeColumns;
   const existingKeys = new Set();
   ws.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const key = dedupeCols.map((c) => String(row.getCell(colIndex[c] ?? 0).value ?? "").trim()).join("|");
+    if (rowNumber <= headerRowNum) return;
+    const key = dedupeCols.map((c) => String(row.getCell(colIndex[norm(c)] ?? 0).value ?? "").trim()).join("|");
     if (key.replace(/\|/g, "")) existingKeys.add(key);
   });
 
@@ -116,7 +139,7 @@ async function appendToExcel(records) {
     }
     const newRow = ws.addRow([]);
     for (const [label, value] of Object.entries(record)) {
-      if (colIndex[label]) newRow.getCell(colIndex[label]).value = value;
+      if (colIndex[norm(label)]) newRow.getCell(colIndex[norm(label)]).value = value;
     }
     existingKeys.add(key);
     appended.push(record);
@@ -128,7 +151,37 @@ async function appendToExcel(records) {
   return appended;
 }
 
-// スプシ貼り付け用CSVを出力
+// テスト反映先スプシへ追記分を貼り付け（gsheet_session.json のセッションを使用）
+async function appendToSpreadsheet(records) {
+  if (records.length === 0) return;
+
+  const tsv = records
+    .map((r) => SHEET_COLUMNS.map((c) => String(r[c] ?? "").replace(/[\t\r\n]+/g, " ")).join("\t"))
+    .join("\n");
+
+  const browser = await chromium.launch({ headless: false });
+  const context = await browser.newContext({ storageState: config.spreadsheet.sessionFile });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const page = await context.newPage();
+  await page.goto(config.spreadsheet.url);
+  await page.waitForLoadState("networkidle");
+  await page.waitForTimeout(3000); // シートの描画待ち
+
+  await page.evaluate((text) => navigator.clipboard.writeText(text), tsv);
+
+  // データ末尾へ移動 → 行頭(A列) → 1行下の空行へ → 貼り付け
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+End");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Control+V");
+  await page.waitForTimeout(5000); // 貼り付け＆自動保存待ち
+
+  await browser.close();
+  console.log(`スプシへ追記しました: ${config.spreadsheet.url}`);
+}
+
+// スプシ貼り付け用CSVを出力（自動貼り付けに失敗した場合の予備）
 function writeCsv(records) {
   if (records.length === 0) return;
   const headers = Object.keys(records[0]);
@@ -171,5 +224,5 @@ function writeCsv(records) {
   console.log(`プロダクト日報へ追記: ${appended.length}件`);
 
   writeCsv(appended);
-  console.log(`スプシへの転記: ${config.spreadsheet.url} を開いて ${config.spreadsheet.csvOutput} の内容を貼り付けてください`);
+  await appendToSpreadsheet(appended);
 })();

@@ -2,7 +2,19 @@
 
 ほうこっくんで「前日/次日 × 新規/リピート」の4パターンを検索し、
 契約一覧の各報告内容をプロダクト日報Excelへ転記（重複チェック付き）、
-追記分をCSVに出力してスプシ転記に使うPlaywrightスクリプトです。
+追記分をテスト用スプシへ自動貼り付けするPlaywrightスクリプトです。
+
+## 設定済みの内容（config.json）
+
+| 項目 | 値 |
+|---|---|
+| ほうこっくん | https://houkoku.access-mgr.biz/certification/login.php |
+| プロダクト日報 | `G:\共有ドライブ\RPA運用-技術課連携\RPA検証用_テストデータ\契約数更新\プロダクト日報_2026.xlsx` の「入六」シート |
+| 反映先スプシ（テスト用・新規作成済み） | https://docs.google.com/spreadsheets/d/1ELEsfL0XQFXMhSwRz9o8WLA88--M8qGBJogk_FnyITY/edit |
+| 重複チェック | 管理番号＋顧客名の組み合わせ |
+
+※ 反映先スプシは1行目が見出し（契約日〜入金日数の26列）のテスト用です。
+　本番反映先が確定したら `config.json` の `spreadsheet.url` を差し替えるだけで切り替えられます。
 
 ## セットアップ（ローカルWindows側）
 
@@ -12,35 +24,45 @@ cd C:\Users\iida869\Desktop\rpa-playwright
 
 npm install exceljs
 
-# config.example.json をコピーして config.json を作成し、TODO箇所を埋める
-copy .\no14_契約数更新\config.example.json .\no14_契約数更新\config.json
-
 # ほうこっくんのセッションを保存（Googleスプシ_ログイン保存.js と同じ方式）
 node .\no14_契約数更新\ほうこっくん_ログイン保存.js
 ```
+
+Googleスプシ側は既存の `gsheet_session.json`（rpa-playwright直下）をそのまま使います。
+無い場合は `Googleスプシ_ログイン保存.js` を先に実行してください。
 
 ## 実行方法
 
 | コマンド | 動作 |
 |---|---|
-| `node .\契約数更新.js --探索` | 画面を開いてPlaywright Inspectorを起動（セレクタ調査用） |
-| `node .\契約数更新.js --dry-run` | Excelに書き込まず抽出結果の表示だけ |
-| `node .\契約数更新.js` | 本番実行 |
+| `node .\契約数更新.js --探索` | ほうこっくんを開いてPlaywright Inspectorを起動（セレクタ調査用） |
+| `node .\契約数更新.js --dry-run` | Excel・スプシに書き込まず抽出結果の表示だけ |
+| `node .\契約数更新.js` | 本番実行（Excel追記 → CSV出力 → スプシ貼り付け） |
 
 まず `--探索` でセレクタを確認 → `--dry-run` で抽出確認 → 本番、の順を推奨。
 
-## 完成までに必要な情報（未確定分）
+## 残っている作業（セレクタの確定）
 
-業務詳細シートに記載がなかったため、以下が埋まると完成します。
+ほうこっくんは社内システムのため、画面のHTML構造だけ実機での確認が必要です。
+`node .\契約数更新.js --探索` で起動し、Inspectorの「Pick locator」で以下を調べて
+`契約数更新.js` 冒頭の `SELECTORS` と `FIELDS` のTODO箇所を置き換えてください。
 
-1. **ほうこっくんの管理画面URL** → `config.json` の `houkokkun.url`
-2. **転記する項目の一覧**（顧客名、契約日、金額…など）→ `契約数更新.js` の `FIELDS`
-3. **プロダクト日報Excelのパスとシート名** → `config.json` の `productNippo`
-4. **転記先スプシのURLと貼り付け先** → `config.json` の `spreadsheet.url`
-5. **画面のセレクタ**（検索結果テーブル・詳細リンク・プルダウン等）
-   → `--探索` モードで起動し、Inspectorの「Pick locator」で調べて `SELECTORS` を更新
+1. メニューの「前日」「次日」ボタン
+2. 項目一覧の「営業」
+3. 報告内容のプルダウンと「検索」ボタン
+4. 検索結果（契約一覧）の行と、報告内容を開くリンク
+5. 報告詳細画面の各項目（契約日・管理番号・顧客名・営業担当者・営業部署・
+   会社所在地・一括orリース・業種・業種カテゴリ・添付画像・格納・Cyteki・
+   売上グロス・売上ネット②・クレカの有無）
+6. 詳細画面から一覧へ戻るボタン
 
-## 重複チェックの仕組み
+調べたセレクタ（またはInspectorで表示されるコード片）を貼ってもらえれば、
+こちらで組み込みます。
 
-`config.json` の `productNippo.dedupeColumns`（既定: 日付+顧客名）の組み合わせで
-既存行と照合し、一致する行はスキップします。
+## 注意点
+
+- プロダクト日報Excelの見出し行が1行目でない場合は `config.json` の
+  `productNippo.headerRow` を実際の見出し行番号に変更してください
+- スプシへの貼り付けは「Ctrl+End→Home→↓→Ctrl+V」でデータ末尾の次の行に
+  貼り付ける方式です。うまくいかない場合は予備として出力される `追記分.csv` を
+  手動で貼り付けてください
