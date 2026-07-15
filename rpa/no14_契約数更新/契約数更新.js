@@ -197,6 +197,14 @@ function writeCsv(records) {
   const context = await browser.newContext({
     storageState: fs.existsSync(config.houkokkun.sessionFile) ? config.houkokkun.sessionFile : undefined,
   });
+
+  // ほうこっくんは http://…/top/ へリダイレクトするがポート80が閉じているため、
+  // http を https に強制的に置き換える（通常ブラウザの自動https格上げ相当）
+  await context.route("http://houkoku.access-mgr.biz/**", (route) => {
+    const url = route.request().url().replace(/^http:/, "https:");
+    return route.fulfill({ status: 302, headers: { location: url } });
+  });
+
   const page = await context.newPage();
   await page.goto(config.houkokkun.url);
 
