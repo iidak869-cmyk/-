@@ -1,6 +1,10 @@
 {
+  "browserChannel": "msedge",
   "houkokkun": {
     "url": "https://houkoku.access-mgr.biz/certification/login.php",
+    "topUrl": "https://houkoku.access-mgr.biz/top/",
+    "id": "",
+    "password": "",
     "sessionFile": "houkokkun_session.json"
   },
   "productNippo": {

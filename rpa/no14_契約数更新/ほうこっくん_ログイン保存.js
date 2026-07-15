@@ -18,7 +18,7 @@ function waitForEnter(message) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: false, channel: config.browserChannel || undefined });
   const context = await browser.newContext();
 
   // ほうこっくんは http://…/top/ へリダイレクトするがポート80が閉じているため、

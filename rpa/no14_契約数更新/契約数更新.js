@@ -73,6 +73,33 @@ const SHEET_COLUMNS = [
 const isExplore = process.argv.includes("--探索");
 const isDryRun = process.argv.includes("--dry-run");
 
+// ほうこっくんにログイン済みの状態を保証する。
+// セッションが切れていたら config.json の id / password で自動ログインする
+async function ensureLoggedIn(page) {
+  await page.goto(config.houkokkun.topUrl || config.houkokkun.url);
+  await page.waitForLoadState("domcontentloaded");
+
+  const needLogin =
+    page.url().includes("login.php") ||
+    (await page.locator('input[placeholder="PASSWORD"]').count()) > 0;
+  if (!needLogin) return;
+
+  const { id, password } = config.houkokkun;
+  if (!id || !password) {
+    throw new Error(
+      "ほうこっくんのセッションが切れています。config.json の houkokkun.id / houkokkun.password を設定してください"
+    );
+  }
+  await page.fill('input[placeholder="ID"]', id);
+  await page.fill('input[placeholder="PASSWORD"]', password);
+  await page.click("text=SIGN IN");
+  await page.waitForLoadState("networkidle");
+
+  if (page.url().includes("login.php")) {
+    throw new Error("ほうこっくんへのログインに失敗しました。ID / PASSWORD を確認してください");
+  }
+}
+
 async function extractPattern(page, pattern) {
   // 前日/次日 → 営業 → 報告内容プルダウン → 検索
   await page.click(SELECTORS.dayButton(pattern.day));
@@ -158,7 +185,7 @@ async function appendToSpreadsheet(records) {
     .map((r) => SHEET_COLUMNS.map((c) => String(r[c] ?? "").replace(/[\t\r\n]+/g, " ")).join("\t"))
     .join("\n");
 
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: false, channel: config.browserChannel || undefined });
   const context = await browser.newContext({ storageState: config.spreadsheet.sessionFile });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const page = await context.newPage();
@@ -193,7 +220,7 @@ function writeCsv(records) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: false, channel: config.browserChannel || undefined });
   const context = await browser.newContext({
     storageState: fs.existsSync(config.houkokkun.sessionFile) ? config.houkokkun.sessionFile : undefined,
   });
@@ -206,14 +233,16 @@ function writeCsv(records) {
   });
 
   const page = await context.newPage();
-  await page.goto(config.houkokkun.url);
 
   if (isExplore) {
-    // セレクタ調査用: Inspectorを開いたまま止める
+    // セレクタ調査用: ログインを試みたあとInspectorを開いたまま止める
+    await ensureLoggedIn(page).catch((e) => console.log(String(e.message ?? e)));
     await page.pause();
     await browser.close();
     return;
   }
+
+  await ensureLoggedIn(page);
 
   const allRecords = [];
   for (const pattern of config.patterns) {
