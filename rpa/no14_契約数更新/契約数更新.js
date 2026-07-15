@@ -5,9 +5,8 @@
 // 追記分をCSVに出力してスプシ転記用に使う。
 //
 // 事前準備:
-//   1. config.example.json をコピーして config.json を作り、TODO箇所を埋める
-//   2. npm install exceljs   （playwrightは既存の rpa-playwright と共用）
-//   3. node .\ほうこっくん_ログイン保存.js でセッションを保存
+//   1. rpa-playwright 直下で npm install exceljs（playwrightは既存環境と共用）
+//   2. node .\ほうこっくん_ログイン保存.js でセッションを保存
 //
 // 実行:
 //   node .\契約数更新.js            … 本番実行
@@ -189,7 +188,7 @@ function writeCsv(records) {
   for (const r of records) {
     lines.push(headers.map((h) => `"${String(r[h] ?? "").replace(/"/g, '""')}"`).join(","));
   }
-  fs.writeFileSync(config.spreadsheet.csvOutput, "﻿" + lines.join("\r\n"), "utf8");
+  fs.writeFileSync(config.spreadsheet.csvOutput, "\uFEFF" + lines.join("\r\n"), "utf8");
   console.log(`追記分CSVを出力しました: ${config.spreadsheet.csvOutput}`);
 }
 
