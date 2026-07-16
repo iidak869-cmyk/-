@@ -141,6 +141,8 @@ async function extractDetail(page, report) {
     return m;
   });
 
+  console.log(`  詳細取得: id=${report.id} 項目数=${Object.keys(map).length} url=${page.url()}`);
+
   const kingaku = map["金額（税込）"] || "";
   const gross = (kingaku.match(/月額[^¥]*¥\s*([\d,]+)/) || [])[1] || "";
   // 「×60回」のような分割表記があればリース、なければ一括（要確認の推定ルール）
@@ -184,8 +186,17 @@ function cellStr(v) {
 async function appendToExcel(records) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(config.productNippo.excelPath);
-  const ws = wb.getWorksheet(config.productNippo.sheetName);
-  if (!ws) throw new Error(`シートが見つかりません: ${config.productNippo.sheetName}`);
+  let ws = wb.getWorksheet(config.productNippo.sheetName);
+  if (!ws) {
+    ws = wb.worksheets.find(
+      (w) => w.name.replace(/\s+/g, "") === String(config.productNippo.sheetName).replace(/\s+/g, "")
+    );
+  }
+  if (!ws) {
+    throw new Error(
+      `シートが見つかりません: ${config.productNippo.sheetName}（このExcelにあるシート: ${wb.worksheets.map((w) => w.name).join(" / ")}）`
+    );
+  }
 
   const norm = (s) => String(s ?? "").replace(/\s+/g, "");
 
