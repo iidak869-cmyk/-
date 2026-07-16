@@ -15,6 +15,7 @@
 
 const { chromium } = require("playwright");
 const fs = require("fs");
+const { execFileSync } = require("child_process");
 const ExcelJS = require("exceljs");
 
 const config = require("./config.json");
@@ -147,6 +148,14 @@ async function collectAndExtract(page) {
   return records;
 }
 
+// 時間表記のゆれを HH:MM に揃える（例: 1600→16:00 / 13→13:00）
+function normalizeTime(t) {
+  t = String(t).replace(/：/g, ":").trim();
+  if (/^\d{3,4}$/.test(t)) return t.slice(0, -2) + ":" + t.slice(-2);
+  if (/^\d{1,2}$/.test(t)) return t + ":00";
+  return t;
+}
+
 // 営業報告の詳細ページから転記項目を抽出する
 async function extractDetail(page, report, listUrl) {
   const detailUrl = new URL(report.href, `${BASE}/top/`).href;
@@ -214,7 +223,7 @@ async function extractDetail(page, report, listUrl) {
     "金額": gross,
     "クレカの有無": kureka ? (kureka === "所持" ? "有" : "無") : "",
     "挨拶日": zoom[1] || "",
-    "挨拶時間": (zoom[2] || "").replace(/：/g, ":"),
+    "挨拶時間": normalizeTime(zoom[2] || ""),
     "納品物件": map["納品物件"] || "",
     "区分": report.区分,
     "報告ID": report.id,
@@ -231,7 +240,9 @@ function cellStr(v) {
   return String(v ?? "").trim();
 }
 
-// プロダクト日報「入力」シートに追記（COLUMN_MAPの固定列へ、重複チェック付き）
+// プロダクト日報「入力」シートに追記する。
+// 重複チェックはExcelJSの読み取りで行い、書き込みはExcel本体(COM)に任せる
+// （ExcelJSで保存し直すと大規模ブックの一部機能が壊れて修復ダイアログが出るため）
 async function appendToExcel(records) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(config.productNippo.excelPath);
@@ -249,14 +260,10 @@ async function appendToExcel(records) {
 
   // 既存データから重複チェック用キー（A列:契約日 + C列:顧客名）を収集
   const existingKeys = new Set();
-  let lastDataRow = 1;
   ws.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
     const key = `${cellStr(row.getCell(colNum("A")).value)}|${cellStr(row.getCell(colNum("C")).value)}`;
-    if (key !== "|") {
-      existingKeys.add(key);
-      lastDataRow = Math.max(lastDataRow, rowNumber);
-    }
+    if (key !== "|") existingKeys.add(key);
   });
 
   const appended = [];
@@ -266,26 +273,32 @@ async function appendToExcel(records) {
       console.log(`  スキップ(転記済み): ${key}`);
       continue;
     }
-    lastDataRow += 1;
-    const row = ws.getRow(lastDataRow);
-    for (const [letter, field] of Object.entries(COLUMN_MAP)) {
-      let value = record[field];
-      if (value === "" || value === undefined || value === null) continue;
-      // 契約日はExcelの日付として書き込む
-      if (letter === "A" && /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(String(value))) {
-        const [y, m, d] = String(value).split("/").map(Number);
-        value = new Date(y, m - 1, d);
-      }
-      row.getCell(colNum(letter)).value = value;
-    }
-    row.commit();
     existingKeys.add(key);
     appended.push(record);
   }
+  if (appended.length === 0) return appended;
 
-  if (appended.length > 0) {
-    await wb.xlsx.writeFile(config.productNippo.excelPath);
-  }
+  // 書き込み対象セルをJSONに書き出し、Excel本体(COM)で追記する
+  const payload = appended.map((r) => {
+    const cells = {};
+    for (const [letter, field] of Object.entries(COLUMN_MAP)) {
+      const v = r[field];
+      if (v !== "" && v !== undefined && v !== null) cells[letter] = v;
+    }
+    return cells;
+  });
+  fs.writeFileSync("転記データ.json", JSON.stringify(payload), "utf8");
+  execFileSync(
+    "powershell",
+    [
+      "-NoProfile", "-ExecutionPolicy", "Bypass",
+      "-File", "転記_com.ps1",
+      "-JsonPath", "転記データ.json",
+      "-ExcelPath", config.productNippo.excelPath,
+      "-SheetName", config.productNippo.sheetName,
+    ],
+    { stdio: "inherit", cwd: __dirname }
+  );
   return appended;
 }
 
