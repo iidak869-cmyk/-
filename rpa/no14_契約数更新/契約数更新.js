@@ -21,12 +21,28 @@ const config = require("./config.json");
 
 const BASE = "https://houkoku.access-mgr.biz";
 
-// スプシ（テスト反映先）の列順。A列からこの順に貼り付ける
-const SHEET_COLUMNS = [
-  "契約日", "管理番号", "顧客名", "営業担当者", "営業部署", "会社所在地",
-  "一括orリース", "業種", "業種カテゴリ", "営業報告の添付画像", "格納", "Cyteki",
-  "売上（グロス）", "売上（ネット②）", "クレカの有無",
-];
+// 「入力」シートの書き込み先（列レター → 転記する項目）。他の列は空欄のまま
+const COLUMN_MAP = {
+  A: "契約日",
+  C: "顧客名",
+  D: "営業担当者",
+  E: "営業部署",
+  F: "会社所在地",
+  H: "業種",
+  J: "画像",            // 添付画像なしのとき「無」、あるときは空欄
+  M: "金額",            // 月額（グロス）を数値で
+  O: "クレカの有無",    // 報告内容の「クレカ(所持/未所持)」から 有/無
+  AD: "挨拶日",         // 報告内容の「挨拶zoom 日時」の日付
+  AE: "挨拶時間",       // 同・時間
+  CH: "納品物件",       // Cyteki / DegiOne
+};
+
+// 列レター → 列番号 (A=1)
+function colNum(letter) {
+  let n = 0;
+  for (const ch of letter) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n;
+}
 
 const isExplore = process.argv.includes("--探索");
 const isDryRun = process.argv.includes("--dry-run");
@@ -179,29 +195,27 @@ async function extractDetail(page, report, listUrl) {
   }
 
   const kingaku = map["金額（税込）"] || "";
-  const gross = (kingaku.match(/月額[^¥]*¥\s*([\d,]+)/) || [])[1] || "";
-  // 「×60回」のような分割表記があればリース、なければ一括（要確認の推定ルール）
-  const isLease = /×\s*\d+回/.test(kingaku) || /×\s*\d+回/.test(report.金額 || "");
+  const grossStr = (kingaku.match(/月額[^¥]*¥\s*([\d,]+)/) || [])[1] || "";
+  const gross = grossStr ? Number(grossStr.replace(/,/g, "")) : "";
   const houkoku = map["報告内容"] || "";
   const kureka = (houkoku.match(/クレカ[^】]*】\s*(未所持|所持)/) || [])[1] || "";
+  // 報告内容の「【挨拶zoom】日時：7/20 10:00」から日付と時間を取り出す
+  const zoom = houkoku.match(/挨拶zoom[^日]*日時[：:]\s*([0-9\/]+)\s*([0-9:：]+)/i) || [];
   const hasImage = (await page.locator('a[data-lightbox="attach"]').count()) > 0;
 
   return {
     "契約日": report.契約日,
-    "管理番号": "", // ほうこっくんに存在しないため手動/別システム
     "顧客名": map["会社名"] || report.会社名,
     "営業担当者": map["営業担当"] || report.営業担当,
     "営業部署": map["営業担当所属部署"] || "",
     "会社所在地": map["会社所在地"] || "",
-    "一括orリース": isLease ? "リース" : "一括",
     "業種": map["業種"] || "",
-    "業種カテゴリ": "", // 手動分類
-    "営業報告の添付画像": hasImage ? "有" : "無",
-    "格納": "",
-    "Cyteki": map["納品物件"] || "",
-    "売上（グロス）": gross ? "¥" + gross : "",
-    "売上（ネット②）": "", // 計算式/手動
+    "画像": hasImage ? "" : "無",
+    "金額": gross,
     "クレカの有無": kureka ? (kureka === "所持" ? "有" : "無") : "",
+    "挨拶日": zoom[1] || "",
+    "挨拶時間": (zoom[2] || "").replace(/：/g, ":"),
+    "納品物件": map["納品物件"] || "",
     "区分": report.区分,
     "報告ID": report.id,
   };
@@ -217,7 +231,7 @@ function cellStr(v) {
   return String(v ?? "").trim();
 }
 
-// プロダクト日報Excelに追記（重複チェック付き）
+// プロダクト日報「入力」シートに追記（COLUMN_MAPの固定列へ、重複チェック付き）
 async function appendToExcel(records) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(config.productNippo.excelPath);
@@ -233,42 +247,38 @@ async function appendToExcel(records) {
     );
   }
 
-  const norm = (s) => String(s ?? "").replace(/\s+/g, "");
-
-  // 見出し行を自動検出（1〜10行目から「契約日」を含む行を探す）
-  let headerRowNum = 0;
-  for (let r = 1; r <= 10 && !headerRowNum; r++) {
-    ws.getRow(r).eachCell((cell) => {
-      if (norm(cellStr(cell.value)) === "契約日") headerRowNum = r;
-    });
-  }
-  if (!headerRowNum) throw new Error("見出し行（契約日）が1〜10行目に見つかりません");
-
-  const colIndex = {};
-  ws.getRow(headerRowNum).eachCell((cell, col) => {
-    colIndex[norm(cellStr(cell.value))] = col;
-  });
-
-  // 既存データから重複チェック用キーを収集
-  const dedupeCols = config.productNippo.dedupeColumns;
+  // 既存データから重複チェック用キー（A列:契約日 + C列:顧客名）を収集
   const existingKeys = new Set();
+  let lastDataRow = 1;
   ws.eachRow((row, rowNumber) => {
-    if (rowNumber <= headerRowNum) return;
-    const key = dedupeCols.map((c) => cellStr(row.getCell(colIndex[norm(c)] ?? 0).value)).join("|");
-    if (key.replace(/\|/g, "")) existingKeys.add(key);
+    if (rowNumber === 1) return;
+    const key = `${cellStr(row.getCell(colNum("A")).value)}|${cellStr(row.getCell(colNum("C")).value)}`;
+    if (key !== "|") {
+      existingKeys.add(key);
+      lastDataRow = Math.max(lastDataRow, rowNumber);
+    }
   });
 
   const appended = [];
   for (const record of records) {
-    const key = dedupeCols.map((c) => String(record[c] ?? "").trim()).join("|");
+    const key = `${String(record["契約日"] ?? "").trim()}|${String(record["顧客名"] ?? "").trim()}`;
     if (existingKeys.has(key)) {
       console.log(`  スキップ(転記済み): ${key}`);
       continue;
     }
-    const newRow = ws.addRow([]);
-    for (const [label, value] of Object.entries(record)) {
-      if (colIndex[norm(label)]) newRow.getCell(colIndex[norm(label)]).value = value;
+    lastDataRow += 1;
+    const row = ws.getRow(lastDataRow);
+    for (const [letter, field] of Object.entries(COLUMN_MAP)) {
+      let value = record[field];
+      if (value === "" || value === undefined || value === null) continue;
+      // 契約日はExcelの日付として書き込む
+      if (letter === "A" && /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(String(value))) {
+        const [y, m, d] = String(value).split("/").map(Number);
+        value = new Date(y, m - 1, d);
+      }
+      row.getCell(colNum(letter)).value = value;
     }
+    row.commit();
     existingKeys.add(key);
     appended.push(record);
   }
@@ -283,8 +293,16 @@ async function appendToExcel(records) {
 async function appendToSpreadsheet(records) {
   if (records.length === 0) return;
 
+  // 「入力」シートと同じ列位置（A〜CH）に値を置いたTSVを作る
+  const width = Math.max(...Object.keys(COLUMN_MAP).map(colNum));
   const tsv = records
-    .map((r) => SHEET_COLUMNS.map((c) => String(r[c] ?? "").replace(/[\t\r\n]+/g, " ")).join("\t"))
+    .map((r) => {
+      const cells = new Array(width).fill("");
+      for (const [letter, field] of Object.entries(COLUMN_MAP)) {
+        cells[colNum(letter) - 1] = String(r[field] ?? "").replace(/[\t\r\n]+/g, " ");
+      }
+      return cells.join("\t");
+    })
     .join("\n");
 
   const browser = await chromium.launch({ headless: false, channel: config.browserChannel || undefined });
