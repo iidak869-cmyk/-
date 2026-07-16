@@ -92,8 +92,24 @@ async function ensureLoggedIn(page) {
   }
   await page.fill('input[placeholder="ID"]', id);
   await page.fill('input[placeholder="PASSWORD"]', password);
-  await page.click("text=SIGN IN");
-  await page.waitForLoadState("networkidle");
+
+  // ボタンクリックだと http://…/top/ へのリダイレクト追跡でポート80に接続して固まるため、
+  // fetch(redirect: manual) でPOSTだけ送り、その後httpsのトップへ自分で移動する
+  await page.evaluate(async () => {
+    const form = document.querySelector("form");
+    const data = new FormData(form);
+    for (const btn of form.querySelectorAll('input[type="submit"]')) {
+      if (btn.name) data.append(btn.name, btn.value);
+    }
+    await fetch(form.getAttribute("action") || location.href, {
+      method: "POST",
+      body: data,
+      redirect: "manual",
+    });
+  });
+
+  await page.goto(config.houkokkun.topUrl || config.houkokkun.url);
+  await page.waitForLoadState("domcontentloaded");
 
   if (page.url().includes("login.php")) {
     throw new Error("ほうこっくんへのログインに失敗しました。ID / PASSWORD を確認してください");
