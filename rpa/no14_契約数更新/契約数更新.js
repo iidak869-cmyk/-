@@ -34,7 +34,7 @@ const isDryRun = process.argv.includes("--dry-run");
 // ほうこっくんにログイン済みの状態を保証する。
 // セッションが切れていたら config.json の id / password で自動ログインする
 async function ensureLoggedIn(page) {
-  await page.goto(config.houkokkun.topUrl || config.houkokkun.url);
+  await page.goto(config.houkokkun.topUrl || config.houkokkun.url, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("domcontentloaded");
 
   const needLogin =
@@ -66,7 +66,7 @@ async function ensureLoggedIn(page) {
     });
   });
 
-  await page.goto(config.houkokkun.topUrl || config.houkokkun.url);
+  await page.goto(config.houkokkun.topUrl || config.houkokkun.url, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("domcontentloaded");
 
   if (page.url().includes("login.php")) {
@@ -84,12 +84,13 @@ async function collectReports(page) {
     for (const type of ["新規", "リピート"]) {
       const value = type === "新規" ? "s,1" : "s,3";
 
-      await page.goto(`${BASE}/top/index.php?id=${dayOffset}`);
+      await page.goto(`${BASE}/top/index.php?id=${dayOffset}`, { waitUntil: "domcontentloaded" });
       await page.waitForLoadState("domcontentloaded");
       await page.click('label[for="tab1_1"]'); // 営業タブ
       await page.selectOption('select[name="sales_type"]', value);
       await page.click('input[name="sales_search"]');
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForTimeout(800);
 
       const rows = await page.$$eval('tr[data-href*="sales_product_reportdetail"]', (trs) =>
         trs.map((tr) => {
@@ -111,6 +112,7 @@ async function collectReports(page) {
       console.log(`  ${dayLabel}×${type}: ${rows.length}件`);
 
       for (const row of rows) {
+        if (row.報告種別 !== type) continue; // 絞り込み前の行が混ざった場合の保険
         const id = (row.href.match(/id=(\d+)/) || [])[1];
         if (!id || seen.has(id)) continue; // 前日/当日の一覧に同じ報告が出るケースを除去
         seen.add(id);
@@ -123,7 +125,7 @@ async function collectReports(page) {
 
 // 営業報告の詳細ページから転記項目を抽出する
 async function extractDetail(page, report) {
-  await page.goto(new URL(report.href, `${BASE}/top/`).href);
+  await page.goto(new URL(report.href, `${BASE}/top/`).href, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("domcontentloaded");
 
   // 【ラベル】→ 値 のマップを作る（画面のth/td構造を利用）
@@ -242,9 +244,10 @@ async function appendToSpreadsheet(records) {
   const browser = await chromium.launch({ headless: false, channel: config.browserChannel || undefined });
   const context = await browser.newContext({ storageState: config.spreadsheet.sessionFile });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  context.setDefaultNavigationTimeout(90000);
   const page = await context.newPage();
-  await page.goto(config.spreadsheet.url);
-  await page.waitForLoadState("networkidle");
+  await page.goto(config.spreadsheet.url, { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("domcontentloaded");
   await page.waitForTimeout(3000); // シートの描画待ち
 
   await page.evaluate((text) => navigator.clipboard.writeText(text), tsv);
@@ -286,6 +289,7 @@ function writeCsv(records) {
     return route.fulfill({ status: 302, headers: { location: url } });
   });
 
+  context.setDefaultNavigationTimeout(90000);
   const page = await context.newPage();
 
   if (isExplore) {
