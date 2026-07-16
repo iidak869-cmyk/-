@@ -126,7 +126,9 @@ async function collectReports(page) {
 // 営業報告の詳細ページから転記項目を抽出する
 async function extractDetail(page, report) {
   await page.goto(new URL(report.href, `${BASE}/top/`).href, { waitUntil: "domcontentloaded" });
-  await page.waitForLoadState("domcontentloaded");
+  // 詳細テーブルが描画されるまで明示的に待つ
+  await page.waitForSelector("main table tr th", { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(500);
 
   // 【ラベル】→ 値 のマップを作る（画面のth/td構造を利用）
   const map = await page.$$eval("main table tr", (trs) => {
@@ -142,6 +144,19 @@ async function extractDetail(page, report) {
   });
 
   console.log(`  詳細取得: id=${report.id} 項目数=${Object.keys(map).length} url=${page.url()}`);
+
+  // 調査用: 項目数0が起きた最初の1件だけ、実際に見えているHTMLを保存する
+  if (!extractDetail.dumped && Object.keys(map).length === 0) {
+    extractDetail.dumped = true;
+    const dumpPath =
+      "G:\\共有ドライブ\\RPA運用-技術課連携\\RPA検証用_テストデータ\\契約数更新\\html_dump\\99_run_detail_dump.html";
+    try {
+      fs.writeFileSync(dumpPath, await page.content(), "utf8");
+      console.log(`  (調査用HTMLを保存しました: ${dumpPath})`);
+    } catch (e) {
+      console.log(`  (調査用HTMLの保存に失敗: ${e.message})`);
+    }
+  }
 
   const kingaku = map["金額（税込）"] || "";
   const gross = (kingaku.match(/月額[^¥]*¥\s*([\d,]+)/) || [])[1] || "";
