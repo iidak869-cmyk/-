@@ -1,17 +1,17 @@
-// No.14 契約数更新
+// No.14 契約数更新（完成版）
 //
-// ほうこっくんで「前日/次日 × 新規/リピート」の4パターンを検索し、
-// 契約一覧の各報告内容からプロダクト日報Excelへ転記、
-// 追記分をCSVに出力してスプシ転記用に使う。
-//
-// 事前準備:
-//   1. rpa-playwright 直下で npm install exceljs（playwrightは既存環境と共用）
-//   2. node .\ほうこっくん_ログイン保存.js でセッションを保存
+// ほうこっくんの「前日(id=-1)」「当日(id=0)」×「新規/リピート」の4パターンを検索し、
+// 営業報告の詳細から項目を抽出して プロダクト日報Excel へ転記（重複チェック付き）、
+// 追記分をテスト用スプシへ自動貼り付けする。
 //
 // 実行:
 //   node .\契約数更新.js            … 本番実行
-//   node .\契約数更新.js --探索     … 画面を開いてPlaywright Inspectorを起動（セレクタ調査用）
-//   node .\契約数更新.js --dry-run  … Excelに書き込まず、抽出結果の表示だけ行う
+//   node .\契約数更新.js --dry-run  … Excel・スプシに書き込まず、抽出結果の表示だけ行う
+//   node .\契約数更新.js --探索     … 画面を開いてPlaywright Inspectorを起動（調査用）
+//
+// 補足:
+//   ・「7/15の報告一覧」には 営業日付7/15の契約 と 7/15に報告された前日営業分 が混在する仕様。
+//     前日と当日の両方を回し、契約日+会社名の重複チェックで二重転記を防ぐ（手作業と同じ運用）。
 
 const { chromium } = require("playwright");
 const fs = require("fs");
@@ -19,48 +19,7 @@ const ExcelJS = require("exceljs");
 
 const config = require("./config.json");
 
-// ============================================================
-// ここから要調整：ほうこっくんの実際の画面に合わせて修正する
-// （--探索 モードで起動し、Inspectorの「Pick locator」で確認する）
-// ============================================================
-const SELECTORS = {
-  // メニュー画面左上の「前日」「次日」ボタン
-  dayButton: (label) => `text=${label}`,
-  // 項目一覧の「営業」
-  salesItem: `text=営業`,
-  // 報告内容のプルダウン
-  reportTypeSelect: `select`, // TODO: 実際のセレクタに変更
-  // プルダウン右側の「検索」ボタン
-  searchButton: `text=検索`,
-  // 検索結果（契約一覧）の行
-  resultRows: `table tbody tr`, // TODO: 実際のセレクタに変更
-  // 各行の報告内容を開くリンク/ボタン
-  detailLink: `a`, // TODO: 実際のセレクタに変更
-  // 詳細画面を閉じて一覧に戻る操作（戻るボタン等）
-  backToList: `text=戻る`, // TODO: 実際のセレクタに変更
-};
-
-// 報告詳細画面から転記する項目。
-// キー = プロダクト日報「入六」シートの列見出し、値 = ほうこっくん詳細画面上のセレクタ
-// TODO: --探索 モードで詳細画面のセレクタを確認して埋める。
-//       ほうこっくん側に存在しない項目（手作業で埋める列）は削除してOK
-const FIELDS = {
-  "契約日": "TODO_セレクタ",
-  "管理番号": "TODO_セレクタ",
-  "顧客名": "TODO_セレクタ",
-  "営業担当者": "TODO_セレクタ",
-  "営業部署": "TODO_セレクタ",
-  "会社所在地": "TODO_セレクタ",
-  "一括orリース": "TODO_セレクタ",
-  "業種": "TODO_セレクタ",
-  "業種カテゴリ": "TODO_セレクタ",
-  "営業報告の添付画像": "TODO_セレクタ",
-  "格納": "TODO_セレクタ",
-  "Cyteki": "TODO_セレクタ",
-  "売上（グロス）": "TODO_セレクタ",
-  "売上（ネット②）": "TODO_セレクタ",
-  "クレカの有無": "TODO_セレクタ",
-};
+const BASE = "https://houkoku.access-mgr.biz";
 
 // スプシ（テスト反映先）の列順。A列からこの順に貼り付ける
 const SHEET_COLUMNS = [
@@ -68,7 +27,6 @@ const SHEET_COLUMNS = [
   "一括orリース", "業種", "業種カテゴリ", "営業報告の添付画像", "格納", "Cyteki",
   "売上（グロス）", "売上（ネット②）", "クレカの有無",
 ];
-// ============================================================
 
 const isExplore = process.argv.includes("--探索");
 const isDryRun = process.argv.includes("--dry-run");
@@ -116,34 +74,108 @@ async function ensureLoggedIn(page) {
   }
 }
 
-async function extractPattern(page, pattern) {
-  // 前日/次日 → 営業 → 報告内容プルダウン → 検索
-  await page.click(SELECTORS.dayButton(pattern.day));
-  await page.click(SELECTORS.salesItem);
-  await page.selectOption(SELECTORS.reportTypeSelect, { label: pattern.type });
-  await page.click(SELECTORS.searchButton);
-  await page.waitForLoadState("networkidle");
+// 前日(id=-1)/当日(id=0) × 新規/リピート で検索し、営業報告の一覧行を収集する
+async function collectReports(page) {
+  const seen = new Set();
+  const reports = [];
 
-  const records = [];
-  const rowCount = await page.locator(SELECTORS.resultRows).count();
-  console.log(`  ${pattern.day}×${pattern.type}: ${rowCount}件`);
+  for (const dayOffset of [-1, 0]) {
+    const dayLabel = dayOffset === -1 ? "前日" : "当日";
+    for (const type of ["新規", "リピート"]) {
+      const value = type === "新規" ? "s,1" : "s,3";
 
-  for (let i = 0; i < rowCount; i++) {
-    // 詳細画面を開いて項目を抽出
-    await page.locator(SELECTORS.resultRows).nth(i).locator(SELECTORS.detailLink).first().click();
-    await page.waitForLoadState("networkidle");
+      await page.goto(`${BASE}/top/index.php?id=${dayOffset}`);
+      await page.waitForLoadState("domcontentloaded");
+      await page.click('label[for="tab1_1"]'); // 営業タブ
+      await page.selectOption('select[name="sales_type"]', value);
+      await page.click('input[name="sales_search"]');
+      await page.waitForLoadState("networkidle");
 
-    const record = { 区分: `${pattern.day}×${pattern.type}` };
-    for (const [label, selector] of Object.entries(FIELDS)) {
-      record[label] = (await page.locator(selector).first().textContent().catch(() => "")) ?? "";
-      record[label] = record[label].trim();
+      const rows = await page.$$eval('tr[data-href*="sales_product_reportdetail"]', (trs) =>
+        trs.map((tr) => {
+          const tds = [...tr.querySelectorAll("td")].map((td) =>
+            td.textContent.replace(/\s+/g, " ").trim()
+          );
+          return {
+            href: tr.dataset.href,
+            更新日時: tds[0],
+            契約日: tds[1], // 営業日付
+            報告種別: tds[2],
+            営業担当: tds[3],
+            アポ担当: tds[4],
+            金額: tds[5],
+            会社名: tds[6],
+          };
+        })
+      );
+      console.log(`  ${dayLabel}×${type}: ${rows.length}件`);
+
+      for (const row of rows) {
+        const id = (row.href.match(/id=(\d+)/) || [])[1];
+        if (!id || seen.has(id)) continue; // 前日/当日の一覧に同じ報告が出るケースを除去
+        seen.add(id);
+        reports.push({ ...row, id, 区分: `${dayLabel}×${type}` });
+      }
     }
-    records.push(record);
-
-    await page.click(SELECTORS.backToList);
-    await page.waitForLoadState("networkidle");
   }
-  return records;
+  return reports;
+}
+
+// 営業報告の詳細ページから転記項目を抽出する
+async function extractDetail(page, report) {
+  await page.goto(new URL(report.href, `${BASE}/top/`).href);
+  await page.waitForLoadState("domcontentloaded");
+
+  // 【ラベル】→ 値 のマップを作る（画面のth/td構造を利用）
+  const map = await page.$$eval("main table tr", (trs) => {
+    const m = {};
+    for (const tr of trs) {
+      const th = tr.querySelector("th");
+      const td = tr.querySelector("td");
+      if (!th || !td) continue;
+      const key = th.textContent.replace(/[【】\s]/g, "");
+      if (key && !(key in m)) m[key] = td.textContent.replace(/\s+/g, " ").trim();
+    }
+    return m;
+  });
+
+  const kingaku = map["金額（税込）"] || "";
+  const gross = (kingaku.match(/月額[^¥]*¥\s*([\d,]+)/) || [])[1] || "";
+  // 「×60回」のような分割表記があればリース、なければ一括（要確認の推定ルール）
+  const isLease = /×\s*\d+回/.test(kingaku) || /×\s*\d+回/.test(report.金額 || "");
+  const houkoku = map["報告内容"] || "";
+  const kureka = (houkoku.match(/クレカ[^】]*】\s*(未所持|所持)/) || [])[1] || "";
+  const hasImage = (await page.locator('a[data-lightbox="attach"]').count()) > 0;
+
+  return {
+    "契約日": report.契約日,
+    "管理番号": "", // ほうこっくんに存在しないため手動/別システム
+    "顧客名": map["会社名"] || report.会社名,
+    "営業担当者": map["営業担当"] || report.営業担当,
+    "営業部署": map["営業担当所属部署"] || "",
+    "会社所在地": map["会社所在地"] || "",
+    "一括orリース": isLease ? "リース" : "一括",
+    "業種": map["業種"] || "",
+    "業種カテゴリ": "", // 手動分類
+    "営業報告の添付画像": hasImage ? "有" : "無",
+    "格納": "",
+    "Cyteki": map["納品物件"] || "",
+    "売上（グロス）": gross ? "¥" + gross : "",
+    "売上（ネット②）": "", // 計算式/手動
+    "クレカの有無": kureka ? (kureka === "所持" ? "有" : "無") : "",
+    "区分": report.区分,
+    "報告ID": report.id,
+  };
+}
+
+// Excelセル値を比較用の文字列にする（日付セルは yyyy/mm/dd に揃える）
+function cellStr(v) {
+  if (v instanceof Date) {
+    const p = (n) => String(n).padStart(2, "0");
+    return `${v.getFullYear()}/${p(v.getMonth() + 1)}/${p(v.getDate())}`;
+  }
+  if (v && typeof v === "object" && "text" in v) return String(v.text).trim();
+  return String(v ?? "").trim();
 }
 
 // プロダクト日報Excelに追記（重複チェック付き）
@@ -153,22 +185,28 @@ async function appendToExcel(records) {
   const ws = wb.getWorksheet(config.productNippo.sheetName);
   if (!ws) throw new Error(`シートが見つかりません: ${config.productNippo.sheetName}`);
 
-  // 見出し行（config.productNippo.headerRow）から列位置を特定
-  const headerRowNum = config.productNippo.headerRow ?? 1;
-  const headerRow = ws.getRow(headerRowNum);
-  const colIndex = {};
-  headerRow.eachCell((cell, col) => {
-    colIndex[String(cell.value ?? "").replace(/\s+/g, "")] = col;
-  });
-
   const norm = (s) => String(s ?? "").replace(/\s+/g, "");
+
+  // 見出し行を自動検出（1〜10行目から「契約日」を含む行を探す）
+  let headerRowNum = 0;
+  for (let r = 1; r <= 10 && !headerRowNum; r++) {
+    ws.getRow(r).eachCell((cell) => {
+      if (norm(cellStr(cell.value)) === "契約日") headerRowNum = r;
+    });
+  }
+  if (!headerRowNum) throw new Error("見出し行（契約日）が1〜10行目に見つかりません");
+
+  const colIndex = {};
+  ws.getRow(headerRowNum).eachCell((cell, col) => {
+    colIndex[norm(cellStr(cell.value))] = col;
+  });
 
   // 既存データから重複チェック用キーを収集
   const dedupeCols = config.productNippo.dedupeColumns;
   const existingKeys = new Set();
   ws.eachRow((row, rowNumber) => {
     if (rowNumber <= headerRowNum) return;
-    const key = dedupeCols.map((c) => String(row.getCell(colIndex[norm(c)] ?? 0).value ?? "").trim()).join("|");
+    const key = dedupeCols.map((c) => cellStr(row.getCell(colIndex[norm(c)] ?? 0).value)).join("|");
     if (key.replace(/\|/g, "")) existingKeys.add(key);
   });
 
@@ -176,7 +214,7 @@ async function appendToExcel(records) {
   for (const record of records) {
     const key = dedupeCols.map((c) => String(record[c] ?? "").trim()).join("|");
     if (existingKeys.has(key)) {
-      console.log(`  スキップ(重複): ${key}`);
+      console.log(`  スキップ(転記済み): ${key}`);
       continue;
     }
     const newRow = ws.addRow([]);
@@ -223,7 +261,7 @@ async function appendToSpreadsheet(records) {
   console.log(`スプシへ追記しました: ${config.spreadsheet.url}`);
 }
 
-// スプシ貼り付け用CSVを出力（自動貼り付けに失敗した場合の予備）
+// スプシ貼り付け用CSVを出力（自動貼り付けに失敗した場合の予備 兼 実行ログ）
 function writeCsv(records) {
   if (records.length === 0) return;
   const headers = Object.keys(records[0]);
@@ -251,7 +289,6 @@ function writeCsv(records) {
   const page = await context.newPage();
 
   if (isExplore) {
-    // セレクタ調査用: ログインを試みたあとInspectorを開いたまま止める
     await ensureLoggedIn(page).catch((e) => console.log(String(e.message ?? e)));
     await page.pause();
     await browser.close();
@@ -260,19 +297,22 @@ function writeCsv(records) {
 
   await ensureLoggedIn(page);
 
-  const allRecords = [];
-  for (const pattern of config.patterns) {
-    allRecords.push(...(await extractPattern(page, pattern)));
+  const reports = await collectReports(page);
+  console.log(`一覧から取得: ${reports.length}件（同一報告の重複は除去済み）`);
+
+  const records = [];
+  for (const report of reports) {
+    records.push(await extractDetail(page, report));
   }
   await browser.close();
 
-  console.log(`抽出合計: ${allRecords.length}件`);
   if (isDryRun) {
-    console.table(allRecords);
+    console.table(records);
+    console.log("dry-runのためExcel・スプシへは書き込みませんでした");
     return;
   }
 
-  const appended = await appendToExcel(allRecords);
+  const appended = await appendToExcel(records);
   console.log(`プロダクト日報へ追記: ${appended.length}件`);
 
   writeCsv(appended);
