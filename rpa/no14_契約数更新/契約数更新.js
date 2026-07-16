@@ -74,18 +74,20 @@ async function ensureLoggedIn(page) {
   }
 }
 
-// 前日(id=-1)/当日(id=0) × 新規/リピート で検索し、営業報告の一覧行を収集する
-async function collectReports(page) {
+// 検索直後にその一覧から詳細を開いて抽出する。
+// ほうこっくんは「直前に表示した一覧に載っている報告」しか詳細を開かせない
+// （それ以外は「不正なアクセスです」になる）ため、検索→即詳細の順で処理する
+async function collectAndExtract(page) {
   const seen = new Set();
-  const reports = [];
+  const records = [];
 
   for (const dayOffset of [-1, 0]) {
     const dayLabel = dayOffset === -1 ? "前日" : "当日";
     for (const type of ["新規", "リピート"]) {
       const value = type === "新規" ? "s,1" : "s,3";
+      const listUrl = `${BASE}/top/index.php?id=${dayOffset}`;
 
-      await page.goto(`${BASE}/top/index.php?id=${dayOffset}`, { waitUntil: "domcontentloaded" });
-      await page.waitForLoadState("domcontentloaded");
+      await page.goto(listUrl, { waitUntil: "domcontentloaded" });
       await page.click('label[for="tab1_1"]'); // 営業タブ
       await page.selectOption('select[name="sales_type"]', value);
       await page.click('input[name="sales_search"]');
@@ -111,24 +113,42 @@ async function collectReports(page) {
       );
       console.log(`  ${dayLabel}×${type}: ${rows.length}件`);
 
+      const targets = [];
       for (const row of rows) {
         if (row.報告種別 !== type) continue; // 絞り込み前の行が混ざった場合の保険
         const id = (row.href.match(/id=(\d+)/) || [])[1];
         if (!id || seen.has(id)) continue; // 前日/当日の一覧に同じ報告が出るケースを除去
         seen.add(id);
-        reports.push({ ...row, id, 区分: `${dayLabel}×${type}` });
+        targets.push({ ...row, id, 区分: `${dayLabel}×${type}` });
+      }
+
+      // この一覧に載っている報告の詳細を、一覧の状態が生きているうちに開く
+      for (const report of targets) {
+        records.push(await extractDetail(page, report, listUrl));
       }
     }
   }
-  return reports;
+  return records;
 }
 
 // 営業報告の詳細ページから転記項目を抽出する
-async function extractDetail(page, report) {
-  await page.goto(new URL(report.href, `${BASE}/top/`).href, { waitUntil: "domcontentloaded" });
-  // 詳細テーブルが描画されるまで明示的に待つ
-  await page.waitForSelector("main table tr th", { timeout: 15000 }).catch(() => {});
-  await page.waitForTimeout(500);
+async function extractDetail(page, report, listUrl) {
+  const detailUrl = new URL(report.href, `${BASE}/top/`).href;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await page.goto(detailUrl, { waitUntil: "domcontentloaded", referer: listUrl });
+    await page.waitForSelector("main table tr th", { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(300);
+
+    // 「不正なアクセスです」と拒否されたら、一覧を開き直して1回だけ再試行
+    if ((await page.locator("text=不正なアクセス").count()) > 0 && attempt === 1) {
+      console.log(`  id=${report.id}: 不正なアクセス表示 → 一覧を開き直して再試行`);
+      await page.goto(listUrl, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(500);
+      continue;
+    }
+    break;
+  }
 
   // 【ラベル】→ 値 のマップを作る（画面のth/td構造を利用）
   const map = await page.$$eval("main table tr", (trs) => {
@@ -327,13 +347,8 @@ function writeCsv(records) {
 
   await ensureLoggedIn(page);
 
-  const reports = await collectReports(page);
-  console.log(`一覧から取得: ${reports.length}件（同一報告の重複は除去済み）`);
-
-  const records = [];
-  for (const report of reports) {
-    records.push(await extractDetail(page, report));
-  }
+  const records = await collectAndExtract(page);
+  console.log(`抽出合計: ${records.length}件（同一報告の重複は除去済み）`);
   await browser.close();
 
   if (isDryRun) {
