@@ -1,6 +1,7 @@
 """ほうこっくんの画面操作。"""
 from __future__ import annotations
 
+import re
 from urllib.parse import urljoin
 
 from playwright.sync_api import Page
@@ -21,6 +22,10 @@ class LoginError(HokokkunError):
 
 class UnauthorizedAccessError(HokokkunError):
     """詳細画面で「不正なアクセスです。」が表示された場合のエラー。"""
+
+
+class CompanyNameNotFoundError(HokokkunError):
+    """詳細画面から会社名を取得できなかった場合のエラー（この報告は登録せずスキップする）。"""
 
 
 def login_to_hokokkun(page: Page, config: Config) -> None:
@@ -59,9 +64,11 @@ def open_sales_list(page: Page, target_day: str) -> None:
     page.wait_for_timeout(1500)
 
 
-# 一覧の列順（0始まり）。5.4節・一覧画面のスクリーンショットに対応。
-LIST_COL_UPDATED_AT = 0     # 更新日時
-LIST_COL_COMPANY_NAME = 6  # 会社名
+# 一覧の列順（0始まり）。一覧画面のスクリーンショットに対応。
+LIST_COL_UPDATED_AT = 0      # 更新日時
+LIST_COL_MEETING_DATE = 1   # 営業日付
+LIST_COL_AMOUNT = 5          # 金額
+LIST_COL_COMPANY_NAME = 6   # 会社名
 
 
 def get_sales_list_items(page: Page) -> list[dict]:
@@ -74,13 +81,14 @@ def get_sales_list_items(page: Page) -> list[dict]:
             # 見出し行(th)には role="cell" が無いためスキップされる。
             continue
         updated_at = cells.nth(LIST_COL_UPDATED_AT).inner_text().strip()
-        company_name = cells.nth(LIST_COL_COMPANY_NAME).inner_text().strip()
         if not updated_at:
             continue
         items.append({
             "row_index": row_index,
             "updated_at": updated_at,
-            "company_name": company_name,
+            "meeting_date": cells.nth(LIST_COL_MEETING_DATE).inner_text().strip(),
+            "amount": cells.nth(LIST_COL_AMOUNT).inner_text().strip(),
+            "company_name": cells.nth(LIST_COL_COMPANY_NAME).inner_text().strip(),
         })
     return items
 
@@ -92,9 +100,71 @@ def open_sales_detail(page: Page, item: dict) -> None:
     page.wait_for_timeout(1500)
 
 
+# 詳細画面の項目ラベル→取得結果のキーの対応。「現在の状況」列の値をそのまま使う項目のみ。
+DETAIL_LABEL_TO_FIELD = {
+    "営業方法": "sales_method",
+    "結果": "result",
+    "営業担当": "sales_staff",
+    "同行": "accompany",
+    "種類": "type",
+    "営業日時": "meeting_datetime_raw",
+    "会社名": "company_name",
+    "会社所在地": "company_address",
+    "代表者名": "representative",
+    "業種": "industry",
+    "アポ担当": "appointment_staff",
+    "納品物件": "delivery_item",
+    # NG理由: NG案件の実際の画面例を確認してから追加する。
+}
+
+_MEETING_TIME_RE = re.compile(r"(\d{1,2}:\d{2}\s*[〜~\-]\s*\d{1,2}:\d{2})")
+_CREDIT_CARD_RE = re.compile(r"クレカ[^\n】]*】\s*(持|未所持)")
+_INITIAL_COLLECTION_RE = re.compile(r"初期[^\n】]*】\s*①期日[:：]\s*([^\n]*)")
+
+
 def extract_sales_detail(page: Page) -> dict:
-    """詳細画面から必要項目を取得する。"""
-    raise NotImplementedError("次の記録セッションで実装します。")
+    """詳細画面から必要項目を取得する。
+
+    項目の多くは「項目名 | 現在の状況 | (初期登録状況)」という単純な行だが、
+    「報告内容」だけは多数のサブ項目（クレカ所持・初期回収 等）を含む
+    自由記述の1項目としてまとめて入っている。そのためクレカ所持・初期回収は
+    「報告内容」の文章から正規表現で拾う。
+    """
+    detail: dict = {}
+    report_content = ""
+
+    rows = page.get_by_role("row")
+    for row_index in range(rows.count()):
+        cells = rows.nth(row_index).get_by_role("cell")
+        if cells.count() < 2:
+            continue
+        label = cells.nth(0).inner_text().strip().strip("【】")
+        current_value = cells.nth(1).inner_text().strip()
+
+        if label == "報告内容":
+            report_content = current_value
+            continue
+
+        if label in DETAIL_LABEL_TO_FIELD:
+            detail[DETAIL_LABEL_TO_FIELD[label]] = current_value
+
+    meeting_time_match = _MEETING_TIME_RE.search(detail.pop("meeting_datetime_raw", ""))
+    detail["meeting_time"] = meeting_time_match.group(1).replace(" ", "") if meeting_time_match else ""
+
+    credit_card_match = _CREDIT_CARD_RE.search(report_content)
+    detail["credit_card"] = "有" if credit_card_match and credit_card_match.group(1) == "持" else ""
+
+    initial_collection_match = _INITIAL_COLLECTION_RE.search(report_content)
+    initial_collection_raw = initial_collection_match.group(1).strip() if initial_collection_match else ""
+    detail["initial_collection"] = "完了" if initial_collection_raw.startswith("無") else ""
+
+    # 契約形態は納品物件の値をそのまま使う。
+    detail["contract_type"] = detail.get("delivery_item", "")
+
+    if not detail.get("company_name", "").strip():
+        raise CompanyNameNotFoundError("詳細画面から会社名を取得できませんでした。")
+
+    return detail
 
 
 def return_to_sales_list(page: Page) -> None:
