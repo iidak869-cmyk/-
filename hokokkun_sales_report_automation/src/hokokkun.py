@@ -28,18 +28,22 @@ def login_to_hokokkun(page: Page, config: Config) -> None:
     if not config.hokokkun_url or not config.hokokkun_login_id or not config.hokokkun_password:
         raise LoginError("HOKOKKUN_URL / HOKOKKUN_LOGIN_ID / HOKOKKUN_PASSWORD が .env に設定されていません。")
 
-    page.goto(config.hokokkun_url)
+    page.on("dialog", lambda dialog: dialog.accept())
+
+    page.goto(config.hokokkun_url, timeout=90000)
     page.get_by_role("textbox", name="ID").fill(config.hokokkun_login_id)
     page.get_by_role("textbox", name="PASSWORD").fill(config.hokokkun_password)
-    page.get_by_role("button", name="SIGN IN").click()
-    page.wait_for_load_state("networkidle")
+
+    # クリック直後の画面遷移はサーバー応答が遅く detach/timeout しやすいため、
+    # click自体の遷移待ちはせず、少し待ってからトップページへ明示的に移動する。
+    page.get_by_role("button", name="SIGN IN").click(no_wait_after=True)
+    page.wait_for_timeout(3000)
+
+    top_url = urljoin(config.hokokkun_url, TOP_PATH)
+    page.goto(top_url, timeout=90000)
 
     if LOGIN_URL_MARKER in page.url:
         raise LoginError("ほうこっくんへのログインに失敗しました。IDまたはパスワードを確認してください。")
-
-    top_url = urljoin(config.hokokkun_url, TOP_PATH)
-    page.goto(top_url)
-    page.wait_for_load_state("networkidle")
 
 
 def open_sales_list(page: Page, target_day: str) -> None:
