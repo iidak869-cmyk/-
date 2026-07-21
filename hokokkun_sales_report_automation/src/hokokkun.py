@@ -59,14 +59,37 @@ def open_sales_list(page: Page, target_day: str) -> None:
     page.wait_for_timeout(1500)
 
 
-def get_sales_list_items(page: Page):
+# 一覧の列順（0始まり）。5.4節・一覧画面のスクリーンショットに対応。
+LIST_COL_UPDATED_AT = 0     # 更新日時
+LIST_COL_COMPANY_NAME = 6  # 会社名
+
+
+def get_sales_list_items(page: Page) -> list[dict]:
     """営業一覧に表示された報告を取得する。"""
-    raise NotImplementedError("次の記録セッションで実装します。")
+    rows = page.get_by_role("row")
+    items: list[dict] = []
+    for row_index in range(rows.count()):
+        cells = rows.nth(row_index).get_by_role("cell")
+        if cells.count() == 0:
+            # 見出し行(th)には role="cell" が無いためスキップされる。
+            continue
+        updated_at = cells.nth(LIST_COL_UPDATED_AT).inner_text().strip()
+        company_name = cells.nth(LIST_COL_COMPANY_NAME).inner_text().strip()
+        if not updated_at:
+            continue
+        items.append({
+            "row_index": row_index,
+            "updated_at": updated_at,
+            "company_name": company_name,
+        })
+    return items
 
 
-def open_sales_detail(page: Page, item) -> None:
+def open_sales_detail(page: Page, item: dict) -> None:
     """営業一覧から詳細画面を開く。"""
-    raise NotImplementedError("次の記録セッションで実装します。")
+    row = page.get_by_role("row").nth(item["row_index"])
+    row.get_by_role("cell").nth(LIST_COL_UPDATED_AT).click()
+    page.wait_for_timeout(1500)
 
 
 def extract_sales_detail(page: Page) -> dict:
@@ -76,4 +99,5 @@ def extract_sales_detail(page: Page) -> dict:
 
 def return_to_sales_list(page: Page) -> None:
     """詳細画面から営業一覧へ戻る。"""
-    raise NotImplementedError("次の記録セッションで実装します。")
+    page.get_by_role("button", name="一覧へ戻る").click()
+    page.wait_for_timeout(1500)
