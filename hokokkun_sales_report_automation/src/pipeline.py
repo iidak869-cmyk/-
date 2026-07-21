@@ -128,7 +128,7 @@ def run(config: Config) -> str:
     all_new_rows: list[dict] = []
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=False)
+        browser = playwright.chromium.launch(headless=config.browser_headless)
         context = browser.new_context()
         page = context.new_page()
 

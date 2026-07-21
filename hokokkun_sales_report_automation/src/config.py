@@ -28,6 +28,7 @@ class Config:
     google_credentials_path: str
     log_directory: Path
     temp_directory: Path
+    browser_headless: bool
 
 
 def load_config() -> Config:
@@ -63,4 +64,5 @@ def load_config() -> Config:
         google_credentials_path=os.getenv("GOOGLE_CREDENTIALS_PATH", "").strip(),
         log_directory=log_directory,
         temp_directory=temp_directory,
+        browser_headless=os.getenv("BROWSER_HEADLESS", "true").strip().lower() != "false",
     )
