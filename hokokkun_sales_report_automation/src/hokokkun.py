@@ -5,6 +5,7 @@ import re
 from urllib.parse import urljoin
 
 from playwright.sync_api import Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .config import Config
 
@@ -51,6 +52,11 @@ def login_to_hokokkun(page: Page, config: Config) -> None:
         raise LoginError("ほうこっくんへのログインに失敗しました。IDまたはパスワードを確認してください。")
 
 
+REPORT_LIST_HEADING_RE = re.compile("の報告一覧")
+DETAIL_HEADING_TEXT = "詳細表示"
+NAVIGATION_TIMEOUT = 60000
+
+
 def open_sales_list(page: Page, target_day: str) -> None:
     """前日または当日の営業一覧を表示する。target_day は "前日" または "当日"。"""
     if target_day == "前日":
@@ -59,10 +65,11 @@ def open_sales_list(page: Page, target_day: str) -> None:
         page.get_by_role("link", name="次日").click(no_wait_after=True)
     else:
         raise ValueError(f'target_day は "前日" か "当日" を指定してください: {target_day}')
-    page.wait_for_timeout(2000)
+    page.get_by_text(REPORT_LIST_HEADING_RE).first.wait_for(timeout=NAVIGATION_TIMEOUT)
 
     page.get_by_text("営業", exact=True).click(no_wait_after=True)
-    page.wait_for_timeout(2000)
+    page.get_by_text(REPORT_LIST_HEADING_RE).first.wait_for(timeout=NAVIGATION_TIMEOUT)
+    page.wait_for_timeout(1000)
 
 
 # 一覧の列順（0始まり）。一覧画面のスクリーンショットに対応。
@@ -99,7 +106,13 @@ def open_sales_detail(page: Page, item: dict) -> None:
     """営業一覧から詳細画面を開く。"""
     row = page.get_by_role("row").nth(item["row_index"])
     row.get_by_role("cell").nth(LIST_COL_UPDATED_AT).click(no_wait_after=True)
-    page.wait_for_timeout(2000)
+    # 「不正なアクセスです。」の場合は「詳細表示」が出ないため、ここでは待つだけで
+    # 例外にはしない。不正アクセスかどうかの判定は呼び出し側で行う。
+    try:
+        page.get_by_text(DETAIL_HEADING_TEXT).wait_for(timeout=NAVIGATION_TIMEOUT)
+    except PlaywrightTimeoutError:
+        pass
+    page.wait_for_timeout(1000)
 
 
 # 詳細画面の項目ラベル→取得結果のキーの対応。「現在の状況」列の値をそのまま使う項目のみ。
@@ -186,7 +199,8 @@ def extract_sales_detail(page: Page) -> dict:
 def return_to_sales_list(page: Page) -> None:
     """詳細画面から営業一覧へ戻る。"""
     page.get_by_role("button", name="一覧へ戻る").click(no_wait_after=True)
-    page.wait_for_timeout(2000)
+    page.get_by_text(REPORT_LIST_HEADING_RE).first.wait_for(timeout=NAVIGATION_TIMEOUT)
+    page.wait_for_timeout(1000)
 
 
 UNAUTHORIZED_ACCESS_TEXT = "不正なアクセスです。"
