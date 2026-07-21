@@ -54,14 +54,15 @@ def login_to_hokokkun(page: Page, config: Config) -> None:
 def open_sales_list(page: Page, target_day: str) -> None:
     """前日または当日の営業一覧を表示する。target_day は "前日" または "当日"。"""
     if target_day == "前日":
-        page.get_by_role("link", name="前日").click()
+        page.get_by_role("link", name="前日").click(no_wait_after=True)
     elif target_day == "当日":
-        page.get_by_role("link", name="次日").click()
+        page.get_by_role("link", name="次日").click(no_wait_after=True)
     else:
         raise ValueError(f'target_day は "前日" か "当日" を指定してください: {target_day}')
+    page.wait_for_timeout(2000)
 
-    page.get_by_text("営業", exact=True).click()
-    page.wait_for_timeout(1500)
+    page.get_by_text("営業", exact=True).click(no_wait_after=True)
+    page.wait_for_timeout(2000)
 
 
 # 一覧の列順（0始まり）。一覧画面のスクリーンショットに対応。
@@ -96,8 +97,8 @@ def get_sales_list_items(page: Page) -> list[dict]:
 def open_sales_detail(page: Page, item: dict) -> None:
     """営業一覧から詳細画面を開く。"""
     row = page.get_by_role("row").nth(item["row_index"])
-    row.get_by_role("cell").nth(LIST_COL_UPDATED_AT).click()
-    page.wait_for_timeout(1500)
+    row.get_by_role("cell").nth(LIST_COL_UPDATED_AT).click(no_wait_after=True)
+    page.wait_for_timeout(2000)
 
 
 # 詳細画面の項目ラベル→取得結果のキーの対応。「現在の状況」列の値をそのまま使う項目のみ。
@@ -183,8 +184,8 @@ def extract_sales_detail(page: Page) -> dict:
 
 def return_to_sales_list(page: Page) -> None:
     """詳細画面から営業一覧へ戻る。"""
-    page.get_by_role("button", name="一覧へ戻る").click()
-    page.wait_for_timeout(1500)
+    page.get_by_role("button", name="一覧へ戻る").click(no_wait_after=True)
+    page.wait_for_timeout(2000)
 
 
 UNAUTHORIZED_ACCESS_TEXT = "不正なアクセスです。"
