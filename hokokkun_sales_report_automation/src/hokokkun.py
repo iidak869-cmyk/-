@@ -70,6 +70,7 @@ LIST_COL_UPDATED_AT = 0      # 更新日時
 LIST_COL_MEETING_DATE = 1   # 営業日付
 LIST_COL_AMOUNT = 5          # 金額
 LIST_COL_COMPANY_NAME = 6   # 会社名
+LIST_COLUMN_COUNT = 8        # 更新日時〜チェック欄の8列
 
 
 def get_sales_list_items(page: Page) -> list[dict]:
@@ -78,8 +79,8 @@ def get_sales_list_items(page: Page) -> list[dict]:
     items: list[dict] = []
     for row_index in range(rows.count()):
         cells = rows.nth(row_index).get_by_role("cell")
-        if cells.count() == 0:
-            # 見出し行(th)には role="cell" が無いためスキップされる。
+        if cells.count() != LIST_COLUMN_COUNT:
+            # 見出し行や、画面上部のカレンダー等の別の表はここで除外する。
             continue
         updated_at = cells.nth(LIST_COL_UPDATED_AT).inner_text().strip()
         if not updated_at:
