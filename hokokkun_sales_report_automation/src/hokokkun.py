@@ -48,7 +48,15 @@ def login_to_hokokkun(page: Page, config: Config) -> None:
 
 def open_sales_list(page: Page, target_day: str) -> None:
     """前日または当日の営業一覧を表示する。target_day は "前日" または "当日"。"""
-    raise NotImplementedError("次の記録セッションで実装します。")
+    if target_day == "前日":
+        page.get_by_role("link", name="前日").click()
+    elif target_day == "当日":
+        page.get_by_role("link", name="次日").click()
+    else:
+        raise ValueError(f'target_day は "前日" か "当日" を指定してください: {target_day}')
+
+    page.get_by_text("営業", exact=True).click()
+    page.wait_for_timeout(1500)
 
 
 def get_sales_list_items(page: Page):
