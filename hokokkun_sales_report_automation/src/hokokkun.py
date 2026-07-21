@@ -153,7 +153,8 @@ def extract_sales_detail(page: Page) -> dict:
 
     rows = page.get_by_role("row")
     for row_index in range(rows.count()):
-        cells = rows.nth(row_index).get_by_role("cell")
+        # 項目名(th)は role="cell" では取得できないため、th/tdを直接指定する。
+        cells = rows.nth(row_index).locator("th, td")
         if cells.count() < 2:
             continue
         label = cells.nth(0).inner_text().strip().strip("【】")
