@@ -114,7 +114,7 @@ DETAIL_LABEL_TO_FIELD = {
     "業種": "industry",
     "アポ担当": "appointment_staff",
     "納品物件": "delivery_item",
-    # NG理由: NG案件の実際の画面例を確認してから追加する。
+    "NG理由": "ng_reason",
 }
 
 _MEETING_TIME_RE = re.compile(r"(\d{1,2}:\d{2}\s*[〜~\-]\s*\d{1,2}:\d{2})")
