@@ -5,6 +5,21 @@ from . import excel_io
 
 DELIVERY_MARK = "○"
 
+# 一覧の「金額」列で、金額が無いことを表す記号（見た目は似ているが別々のUnicode文字）。
+_DASH_PLACEHOLDERS = {"-", "ー", "－", "‐", "−", "ｰ"}
+
+
+def clean_amount(amount_text: str) -> str:
+    """一覧の「金額」列の値を整える。
+
+    - 2行目以降（金額が無いことを示す「ー」など）は使わず、1行目だけを使う。
+    - 1行目が「ー」等の記号のみの場合は空欄にする。
+    """
+    first_line = (amount_text or "").splitlines()[0].strip() if amount_text else ""
+    if first_line in _DASH_PLACEHOLDERS:
+        return ""
+    return first_line
+
 # 納品物件の文字列に含まれるキーワード→対応するExcel列。
 _DELIVERY_ITEM_KEYWORDS: dict[int, tuple[str, ...]] = {
     excel_io.COL_NET1: ("ネット1",),

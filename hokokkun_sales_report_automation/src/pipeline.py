@@ -15,7 +15,7 @@ from .logger import (
     RESULT_SUCCESS,
     RunLog,
 )
-from .mapping import build_excel_row_values
+from .mapping import build_excel_row_values, clean_amount
 from .normalize import normalize_company_name
 
 DAYS_TO_PROCESS = ["前日", "当日"]
@@ -89,8 +89,7 @@ def process_day(page, target_day: str, known_companies: set[str], run_log: RunLo
             hokokkun.return_to_sales_list(page)
             continue
 
-        amount = item.get("amount", "")
-        detail["amount"] = "" if amount == "-" else amount
+        detail["amount"] = clean_amount(item.get("amount", ""))
 
         row_values = build_excel_row_values(detail)
         new_rows.append(row_values)
