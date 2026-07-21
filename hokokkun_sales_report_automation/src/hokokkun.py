@@ -107,6 +107,7 @@ DETAIL_LABEL_TO_FIELD = {
     "営業担当": "sales_staff",
     "同行": "accompany",
     "種類": "type",
+    "更新日時": "updated_at_raw",
     "営業日時": "meeting_datetime_raw",
     "会社名": "company_name",
     "会社所在地": "company_address",
@@ -120,6 +121,8 @@ DETAIL_LABEL_TO_FIELD = {
 _MEETING_TIME_RE = re.compile(r"(\d{1,2}:\d{2}\s*[〜~\-]\s*\d{1,2}:\d{2})")
 _CREDIT_CARD_RE = re.compile(r"クレカ[^\n】]*】\s*(持|未所持)")
 _INITIAL_COLLECTION_RE = re.compile(r"初期[^\n】]*】\s*①期日[:：]\s*([^\n]*)")
+_YEAR_RE = re.compile(r"(\d{4})年")
+_MONTH_DAY_RE = re.compile(r"(\d{1,2})月(\d{1,2})日")
 
 
 def extract_sales_detail(page: Page) -> dict:
@@ -148,8 +151,19 @@ def extract_sales_detail(page: Page) -> dict:
         if label in DETAIL_LABEL_TO_FIELD:
             detail[DETAIL_LABEL_TO_FIELD[label]] = current_value
 
-    meeting_time_match = _MEETING_TIME_RE.search(detail.pop("meeting_datetime_raw", ""))
+    meeting_datetime_raw = detail.pop("meeting_datetime_raw", "")
+    meeting_time_match = _MEETING_TIME_RE.search(meeting_datetime_raw)
     detail["meeting_time"] = meeting_time_match.group(1).replace(" ", "") if meeting_time_match else ""
+
+    year_match = _YEAR_RE.search(detail.pop("updated_at_raw", ""))
+    month_day_match = _MONTH_DAY_RE.search(meeting_datetime_raw)
+    if year_match and month_day_match:
+        year = year_match.group(1)
+        month = int(month_day_match.group(1))
+        day = int(month_day_match.group(2))
+        detail["contract_date"] = f"{year}/{month:02d}/{day:02d}"
+    else:
+        detail["contract_date"] = ""
 
     credit_card_match = _CREDIT_CARD_RE.search(report_content)
     detail["credit_card"] = "有" if credit_card_match and credit_card_match.group(1) == "持" else ""
@@ -171,3 +185,11 @@ def return_to_sales_list(page: Page) -> None:
     """詳細画面から営業一覧へ戻る。"""
     page.get_by_role("button", name="一覧へ戻る").click()
     page.wait_for_timeout(1500)
+
+
+UNAUTHORIZED_ACCESS_TEXT = "不正なアクセスです。"
+
+
+def is_unauthorized_access(page: Page) -> bool:
+    """詳細画面で「不正なアクセスです。」が表示されているか確認する。"""
+    return page.get_by_text(UNAUTHORIZED_ACCESS_TEXT).count() > 0
