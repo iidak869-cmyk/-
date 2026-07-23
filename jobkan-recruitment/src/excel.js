@@ -4,26 +4,15 @@ const config = require('./config');
 const { parseAirworkCsv } = require('./parsers/airworkCsv');
 const { parseDodaCsv } = require('./parsers/dodaCsv');
 
-function isSameDate(a, b) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
-}
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-function getYesterday(referenceDate) {
-  const d = new Date(referenceDate);
-  d.setDate(d.getDate() - 1);
-  return d;
-}
-
-// 手順19,20: 「前日」＝スクリプト実行日の1日前、として判定する
-// TODO(要確認): 「前日」の定義（実行日の1日前で確定でよいか）は要確認
-function filterPreviousDay(records, referenceDate = new Date()) {
-  const yesterday = getYesterday(referenceDate);
+// 手順19,20: 厳密な「前日」判定はせず、実行時刻から遡って24時間以内に
+// 応募があったものを抽出する。毎日同じ間隔で実行し続ける限り、これで
+// 「前日分」が漏れなく（重複なく）取得できる。
+function filterWithinLast24Hours(records, referenceDate = new Date()) {
+  const cutoff = new Date(referenceDate.getTime() - ONE_DAY_MS);
   return records.filter(
-    (r) => r.applicationDate && isSameDate(r.applicationDate, yesterday)
+    (r) => r.applicationDate && r.applicationDate >= cutoff && r.applicationDate <= referenceDate
   );
 }
 
@@ -90,7 +79,7 @@ async function appendApplicantsToReflectExcel(excelPath, records) {
 }
 
 /**
- * 手順19,20: AirWORK/dodaのCSVから前日応募者を抽出し、反映用リスト.xlsxに追記する
+ * 手順19,20: AirWORK/dodaのCSVから直近24時間以内の応募者を抽出し、反映用リスト.xlsxに追記する
  */
 async function reflectAirworkAndDoda({
   airworkCsvPath = path.join(config.applicantListDir, '応募者リスト(AirWORK).csv'),
@@ -98,14 +87,14 @@ async function reflectAirworkAndDoda({
   excelPath = config.reflectExcelPath,
   referenceDate = new Date(),
 } = {}) {
-  const airworkRecords = filterPreviousDay(parseAirworkCsv(airworkCsvPath), referenceDate);
-  const dodaRecords = filterPreviousDay(parseDodaCsv(dodaCsvPath), referenceDate);
+  const airworkRecords = filterWithinLast24Hours(parseAirworkCsv(airworkCsvPath), referenceDate);
+  const dodaRecords = filterWithinLast24Hours(parseDodaCsv(dodaCsvPath), referenceDate);
 
   const airworkCount = await appendApplicantsToReflectExcel(excelPath, airworkRecords);
-  console.log(`[反映] AirWORKの前日応募者 ${airworkCount}件を追記しました`);
+  console.log(`[反映] AirWORKの直近24時間の応募者 ${airworkCount}件を追記しました`);
 
   const dodaCount = await appendApplicantsToReflectExcel(excelPath, dodaRecords);
-  console.log(`[反映] dodaの前日応募者 ${dodaCount}件を追記しました`);
+  console.log(`[反映] dodaの直近24時間の応募者 ${dodaCount}件を追記しました`);
 
   return { airworkCount, dodaCount };
 }
@@ -119,7 +108,7 @@ async function reflectApplicantCsvFolder() {
 }
 
 module.exports = {
-  filterPreviousDay,
+  filterWithinLast24Hours,
   appendApplicantsToReflectExcel,
   reflectAirworkAndDoda,
   reflectApplicantCsvFolder,

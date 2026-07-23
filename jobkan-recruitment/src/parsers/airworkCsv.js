@@ -27,11 +27,13 @@ function findAnswerByKeywords(row, questionCols, answerCols, keywords) {
 }
 
 function parseApplicationDate(appliedAt) {
-  // "2026/04/20 19:05:02" -> Date(2026,3,20)
-  const datePart = (appliedAt || '').split(' ')[0];
-  const [y, m, d] = datePart.split('/').map(Number);
+  // "2026/04/20 19:05:02" -> Date(2026,3,20,19,5,2)
+  // 24時間ローリングウィンドウでの抽出に使うため、時刻まで保持する。
+  const [datePart, timePart] = (appliedAt || '').split(' ');
+  const [y, m, d] = (datePart || '').split('/').map(Number);
   if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d);
+  const [hh, mm, ss] = (timePart || '0:0:0').split(':').map(Number);
+  return new Date(y, m - 1, d, hh || 0, mm || 0, ss || 0);
 }
 
 /**

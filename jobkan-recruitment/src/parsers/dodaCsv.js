@@ -37,7 +37,9 @@ function findAnswerByKeywords(row, questionCols, answerCols, keywords) {
 }
 
 function parseApplicationDate(dateStr) {
-  // "2026/07/23" -> Date(2026,6,23)
+  // "2026/07/23" -> Date(2026,6,23,0,0,0)
+  // dodaのCSVには時刻が含まれないため、その日の0時として扱う
+  // （24時間ローリングウィンドウでのフィルタは src/excel.js 側で行う）
   const [y, m, d] = (dateStr || '').split('/').map(Number);
   if (!y || !m || !d) return null;
   return new Date(y, m - 1, d);
