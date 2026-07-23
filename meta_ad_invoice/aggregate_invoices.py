@@ -5,10 +5,15 @@ Meta広告 請求書集計スクリプト（テスト環境）
   1. 指定フォルダ内のPDF請求書を1件ずつ読み取り、PDFごとにExcelファイルを作成する
   2. 作成したExcelファイルを一時保存フォルダへ保存する
   3. 一時保存フォルダのExcelファイルを1件ずつ確認し、集計用Excel
-     （G:\\共有ドライブ\\RPA運用-技術課連携\\〇月請求分.xlsx）へ以下の項目を転記する
-       - キャンペーン名 / 日時 / 消化金額 / 参照番号 / クレジットカード番号 / アカウント名
+     （G:\\共有ドライブ\\RPA運用-技術課連携\\〇月請求分.xlsx の「成功」シート）へ
+     以下の項目を転記する
+       - キャンペーン名 / 日時 / 消化金額 / 参照番号 / クレカ番号 / アカウント名
   4. データが無い、または必要項目を正しく取得できなかったExcelファイルは
      「白紙」フォルダへ移動する
+
+  集計用Excelがまだ存在しない月（初回実行）は、--template で指定したひな形ファイルを
+  コピーして作成する。ひな形は「キャンペーン名/日時/消化金額/参照番号/クレカ番号/
+  アカウント名」の6列ヘッダーを持つ「成功」シートを含んでいる必要がある。
 
 実行環境:
   ユーザーのWindows端末（C:\\、G:\\共有ドライブへアクセスできる端末）で実行する想定。
@@ -20,9 +25,11 @@ Meta広告 請求書集計スクリプト（テスト環境）
   python aggregate_invoices.py ^
       --source "C:\\Users\\iida869\\Downloads\\202605_CS運用・TRANSCEND＆ValueCreationRoom＆株式会社Growth canvas＆Hackeer＆ピラティス" ^
       --temp-dir "C:\\Users\\iida869\\Downloads\\_一時保存" ^
-      --billing-month 6
+      --billing-month 5 ^
+      --template "G:\\共有ドライブ\\RPA運用-技術課連携\\〇月請求分_ひな形.xlsx"
 
   --rpa-dir と --blank-dir は既定値のままでよければ省略可（README参照）。
+  対象月の集計用Excelがすでに存在する場合は --template を省略できる（そのファイルに追記する）。
 
 実際のMeta広告請求書PDF（Facebook広告マネージャからダウンロードした支払い明細）の
 テキスト構造に合わせて項目を抽出する。1PDF（1回の支払い）につき、次のような行が並ぶ:
@@ -32,7 +39,7 @@ Meta広告 請求書集計スクリプト（テスト環境）
   請求書/支払日
   <YYYY/MM/DD HH:MM>                     ← 支払日時（請求書全体で1つ）
   支払い方法 支払い済み
-  <カードブランド> ····<下4桁>            ← クレジットカード番号
+  <カードブランド> ····<下4桁>            ← クレカ番号
   参照番号: <参照番号> ¥<合計金額>
   ...
   <キャンペーン名>
@@ -53,14 +60,16 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, fields
+from datetime import datetime
 from pathlib import Path
 
 import pdfplumber
 from openpyxl import Workbook, load_workbook
 
-# 集計用Excel・per-PDF Excelの列順
-FIELD_ORDER = ["キャンペーン名", "日時", "消化金額", "参照番号", "クレジットカード番号", "アカウント名"]
-AGGREGATE_HEADERS = ["元PDFファイル名", *FIELD_ORDER]
+# 集計用Excel・per-PDF Excelの列順（実際の集計用Excelのヘッダー表記に合わせている）
+FIELD_ORDER = ["キャンペーン名", "日時", "消化金額", "参照番号", "クレカ番号", "アカウント名"]
+AGGREGATE_HEADERS = FIELD_ORDER
+SUCCESS_SHEET_NAME = "成功"
 
 REFERENCE_PATTERN = re.compile(r"参照番号[:：]\s*(\S+)")
 CARD_PATTERN = re.compile(
@@ -79,7 +88,7 @@ class InvoiceRow:
     日時: str = ""
     消化金額: str = ""
     参照番号: str = ""
-    クレジットカード番号: str = ""
+    クレカ番号: str = ""
     アカウント名: str = ""
 
     def is_complete(self) -> bool:
@@ -95,7 +104,7 @@ def account_name_from_folder(source_dir: Path) -> str:
 
 
 def extract_header_fields(lines: list[str]) -> dict[str, str]:
-    result = {"参照番号": "", "クレジットカード番号": "", "日時": ""}
+    result = {"参照番号": "", "クレカ番号": "", "日時": ""}
 
     full_text = "\n".join(lines)
 
@@ -105,7 +114,7 @@ def extract_header_fields(lines: list[str]) -> dict[str, str]:
 
     m = CARD_PATTERN.search(full_text)
     if m:
-        result["クレジットカード番号"] = m.group(1).strip()
+        result["クレカ番号"] = m.group(1).strip()
 
     for i, line in enumerate(lines):
         if PAYMENT_DATETIME_LABEL.search(line) and i + 1 < len(lines):
@@ -154,7 +163,7 @@ def extract_invoice_rows(pdf_path: Path, account_name: str) -> list[InvoiceRow]:
             消化金額=amount,
             日時=header["日時"],
             参照番号=header["参照番号"],
-            クレジットカード番号=header["クレジットカード番号"],
+            クレカ番号=header["クレカ番号"],
             アカウント名=account_name,
         ))
     return rows
@@ -184,31 +193,69 @@ def read_pdf_excel(xlsx_path: Path) -> list[InvoiceRow]:
     return rows
 
 
-def load_or_create_aggregate(path: Path) -> Workbook:
+def load_or_create_aggregate(path: Path, template: Path | None) -> Workbook:
     if path.exists():
         return load_workbook(path)
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "請求集計"
-    ws.append(AGGREGATE_HEADERS)
+    if template is None:
+        raise FileNotFoundError(
+            f"集計用Excelがまだ存在しません: {path}\n"
+            f"初回はひな形ファイルを --template で指定してください。"
+        )
+    if not template.is_file():
+        raise FileNotFoundError(f"--template で指定したひな形ファイルが見つかりません: {template}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(path)
-    return wb
+    shutil.copy(template, path)
+    return load_workbook(path)
+
+
+def get_success_sheet(wb: Workbook):
+    if SUCCESS_SHEET_NAME not in wb.sheetnames:
+        raise KeyError(
+            f"集計用Excelに「{SUCCESS_SHEET_NAME}」シートがありません（あるシート: {wb.sheetnames}）。"
+            "ひな形の構成を確認してください。"
+        )
+    return wb[SUCCESS_SHEET_NAME]
+
+
+def next_empty_row(ws) -> int:
+    """ひな形はデータの無い行にも書式だけが事前設定されているため、
+    ws.max_row をそのまま使わず、実際に値が入っていない最初の行を探す。"""
+    row = 2
+    num_cols = len(FIELD_ORDER)
+    while any(ws.cell(row=row, column=c).value is not None for c in range(1, num_cols + 1)):
+        row += 1
+    return row
+
+
+def normalize_amount(value) -> str:
+    """「￥12,958」（PDF抽出時の文字列）と 12958（Excel保存後の数値）を同一視できるようにする。"""
+    return str(value).replace("￥", "").replace("¥", "").replace(",", "").strip()
 
 
 def dedup_key(row: InvoiceRow) -> tuple[str, str, str]:
     """1件の請求書に複数キャンペーンの明細が含まれるため、参照番号だけでなく
     キャンペーン名・消化金額も合わせて重複判定キーとする。"""
-    return (row.参照番号, row.キャンペーン名, row.消化金額)
+    return (row.参照番号, row.キャンペーン名, normalize_amount(row.消化金額))
 
 
 def existing_dedup_keys(ws) -> set[tuple[str, str, str]]:
     idx = {name: AGGREGATE_HEADERS.index(name) for name in ("参照番号", "キャンペーン名", "消化金額")}
-    return {
-        (row[idx["参照番号"]], row[idx["キャンペーン名"]], row[idx["消化金額"]])
-        for row in ws.iter_rows(min_row=2, values_only=True)
-        if row and row[idx["参照番号"]]
-    }
+    keys = set()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or row[idx["参照番号"]] is None:
+            continue
+        ref = str(row[idx["参照番号"]])
+        campaign = str(row[idx["キャンペーン名"]])
+        amount = row[idx["消化金額"]]
+        keys.add((ref, campaign, normalize_amount(amount)))
+    return keys
+
+
+def to_cell_values(row: InvoiceRow) -> list:
+    """Excel側の書式（日時は日付型、消化金額は数値）に合わせて型変換する。"""
+    dt = datetime.strptime(row.日時, "%Y/%m/%d %H:%M")
+    amount = int(row.消化金額.replace("￥", "").replace("¥", "").replace(",", ""))
+    return [row.キャンペーン名, dt, amount, row.参照番号, row.クレカ番号, row.アカウント名]
 
 
 def step1_convert_pdfs_to_excel(source_dir: Path, temp_dir: Path, debug: bool) -> list[Path]:
@@ -244,10 +291,12 @@ def step3_transcribe_and_sort(
     excel_paths: list[Path],
     aggregate_path: Path,
     blank_dir: Path,
+    template: Path | None,
 ) -> tuple[int, int]:
-    wb = load_or_create_aggregate(aggregate_path)
-    ws = wb.active
+    wb = load_or_create_aggregate(aggregate_path, template)
+    ws = get_success_sheet(wb)
     known_keys = existing_dedup_keys(ws)
+    next_row = next_empty_row(ws)
 
     blank_dir.mkdir(parents=True, exist_ok=True)
     ok_count = 0
@@ -266,7 +315,9 @@ def step3_transcribe_and_sort(
             key = dedup_key(row)
             if key in known_keys:
                 continue  # 再実行時の重複転記を防止
-            ws.append([xlsx_path.name, *row.as_row()])
+            for col, value in enumerate(to_cell_values(row), start=1):
+                ws.cell(row=next_row, column=col, value=value)
+            next_row += 1
             known_keys.add(key)
 
         ok_count += 1
@@ -298,6 +349,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="不備ファイルの移動先（省略時は <rpa-dir>/白紙）",
     )
     parser.add_argument("--debug", action="store_true", help="PDFの抽出テキストを一時保存先に書き出す")
+    parser.add_argument(
+        "--template",
+        type=Path,
+        default=None,
+        help="対象月の集計用Excelが未作成の場合にコピー元とするひな形ファイル（初回のみ必要）",
+    )
     return parser.parse_args(argv)
 
 
@@ -316,7 +373,11 @@ def main(argv: list[str] | None = None) -> int:
     excel_paths = step1_convert_pdfs_to_excel(args.source, args.temp_dir, args.debug)
 
     print(f"3-4. 集計用Excelへ転記（{aggregate_path}）／不備ファイルは {blank_dir} へ移動")
-    ok_count, ng_count = step3_transcribe_and_sort(excel_paths, aggregate_path, blank_dir)
+    try:
+        ok_count, ng_count = step3_transcribe_and_sort(excel_paths, aggregate_path, blank_dir, args.template)
+    except (FileNotFoundError, KeyError) as e:
+        print(f"[エラー] {e}", file=sys.stderr)
+        return 1
 
     print(f"完了: 転記{ok_count}件 / 白紙移動{ng_count}件")
     return 0
