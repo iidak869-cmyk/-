@@ -24,11 +24,26 @@ Meta広告 請求書集計スクリプト（テスト環境）
 
   --rpa-dir と --blank-dir は既定値のままでよければ省略可（README参照）。
 
-注意:
-  Meta広告請求書PDFのレイアウトは請求方式・言語設定・時期によって表記ゆれがある。
-  実際のPDFで転記結果を確認し、必要に応じて HEADER_PATTERNS / LINE_ITEM_PATTERN を調整すること。
-  --debug 指定でPDFから抽出した生テキストを一時保存フォルダに書き出せるので、
-  パターン調整時はそちらを参照する。
+実際のMeta広告請求書PDF（Facebook広告マネージャからダウンロードした支払い明細）の
+テキスト構造に合わせて項目を抽出する。1PDF（1回の支払い）につき、次のような行が並ぶ:
+
+  <アカウント名>                          ← 長い場合はPDF側で末尾が「…」で省略される
+  アカウントID: <数字>
+  請求書/支払日
+  <YYYY/MM/DD HH:MM>                     ← 支払日時（請求書全体で1つ）
+  支払い方法 支払い済み
+  <カードブランド> ····<下4桁>            ← クレジットカード番号
+  参照番号: <参照番号> ¥<合計金額>
+  ...
+  <キャンペーン名>
+  ¥<消化金額>
+  <YYYY/MM/DD H:MM>〜<YYYY/MM/DD H:MM>    ← キャンペーンの掲載期間（明細行の繰り返し単位）
+  <キャンペーン名> インプレッション<N>件 ¥<消化金額>   ← 上と重複する要約行（無視する）
+
+アカウント名はPDF側で省略されることがあるため、本スクリプトではPDFからではなく
+「PDFが入っているフォルダ名」から取得する（先頭の「YYYYMM_」は除去する）。
+--debug 指定でPDFから抽出した生テキストを一時保存フォルダに書き出せるので、
+レイアウトが変わっていないか確認したいときはそちらを参照する。
 """
 
 from __future__ import annotations
@@ -47,34 +62,15 @@ from openpyxl import Workbook, load_workbook
 FIELD_ORDER = ["キャンペーン名", "日時", "消化金額", "参照番号", "クレジットカード番号", "アカウント名"]
 AGGREGATE_HEADERS = ["元PDFファイル名", *FIELD_ORDER]
 
-# PDFテキストから請求書ヘッダー情報（1PDFにつき1つ）を拾う正規表現。
-# 表記ゆれに備えて複数パターンを許容し、最初にマッチしたものを採用する。
-HEADER_PATTERNS: dict[str, list[str]] = {
-    "参照番号": [
-        r"参照番号[:\s：]*([A-Za-z0-9\-]{6,})",
-        r"Reference\s*(?:Number|No\.?)[:\s]*([A-Za-z0-9\-]{6,})",
-    ],
-    "クレジットカード番号": [
-        r"(?:クレジットカード番号|カード番号|お支払い方法)[:\s：]*([0-9Xx\*・\- ]{4,})",
-        r"(?:Payment method|Card number)[:\s]*([0-9Xx\*\- ]{4,})",
-    ],
-    "アカウント名": [
-        r"(?:広告アカウント名|アカウント名)[:\s：]*(.+)",
-        r"Account name[:\s]*(.+)",
-    ],
-    "日時": [
-        r"(?:請求日|明細期間|請求期間)[:\s：]*(.+)",
-        r"(?:Invoice date|Billing period)[:\s]*(.+)",
-    ],
-}
-
-# 明細（キャンペーンごとの行）を拾う正規表現。1行に「キャンペーン名 ... 金額円」が
-# 並ぶ形式を想定。表形式のPDFでは extract_table() を優先し、これはフォールバック。
-# 「円」を必須にすることで、参照番号やカード番号などの末尾が数字の行を誤検出しないようにする。
-LINE_ITEM_PATTERN = re.compile(
-    r"^(?P<campaign>.+?)\s+(?P<amount>[\d,]+\s*円)\s*$"
+REFERENCE_PATTERN = re.compile(r"参照番号[:：]\s*(\S+)")
+CARD_PATTERN = re.compile(
+    r"((?:Visa|Master\s*Card|JCB|AMEX|American\s*Express|Discover)\s*[·\.・]{2,}\s*\d{3,4})",
+    re.IGNORECASE,
 )
-TABLE_HEADER_PATTERN = re.compile(r"キャンペーン.*(?:消化金額|金額)")
+PAYMENT_DATETIME_LABEL = re.compile(r"請求書/支払日")
+PAYMENT_DATETIME_VALUE = re.compile(r"^\d{4}/\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}$")
+AMOUNT_ONLY_LINE = re.compile(r"^[¥￥][\d,]+$")
+FOLDER_MONTH_PREFIX = re.compile(r"^\d{6}_")
 
 
 @dataclass
@@ -93,63 +89,63 @@ class InvoiceRow:
         return [getattr(self, name) for name in FIELD_ORDER]
 
 
-def extract_header_fields(text: str) -> dict[str, str]:
-    result = {"参照番号": "", "クレジットカード番号": "", "アカウント名": "", "日時": ""}
-    for key, patterns in HEADER_PATTERNS.items():
-        for pattern in patterns:
-            m = re.search(pattern, text)
-            if m:
-                result[key] = m.group(1).strip()
-                break
+def account_name_from_folder(source_dir: Path) -> str:
+    """フォルダ名（例: 202605_CS運用・TRANSCEND＆...）先頭の年月プレフィックスを除いた名称をアカウント名とする。"""
+    return FOLDER_MONTH_PREFIX.sub("", source_dir.name).strip()
+
+
+def extract_header_fields(lines: list[str]) -> dict[str, str]:
+    result = {"参照番号": "", "クレジットカード番号": "", "日時": ""}
+
+    full_text = "\n".join(lines)
+
+    m = REFERENCE_PATTERN.search(full_text)
+    if m:
+        result["参照番号"] = m.group(1).strip()
+
+    m = CARD_PATTERN.search(full_text)
+    if m:
+        result["クレジットカード番号"] = m.group(1).strip()
+
+    for i, line in enumerate(lines):
+        if PAYMENT_DATETIME_LABEL.search(line) and i + 1 < len(lines):
+            candidate = lines[i + 1].strip()
+            if PAYMENT_DATETIME_VALUE.match(candidate):
+                result["日時"] = candidate
+            break
+
     return result
 
 
-def extract_line_items(pdf: "pdfplumber.PDF") -> list[tuple[str, str]]:
-    """(キャンペーン名, 消化金額) の一覧を、表があれば表から、無ければテキストから抽出する。"""
+def extract_line_items(lines: list[str]) -> list[tuple[str, str]]:
+    """(キャンペーン名, 消化金額) の一覧を抽出する。
+
+    「¥12,958」のような金額単独行を見つけ、その直前の行をキャンペーン名とする。
+    直後に続く「<キャンペーン名> インプレッション...件 ¥...」の要約行は
+    金額単独行に一致しないため自然に無視される。
+    """
     items: list[tuple[str, str]] = []
-
-    for page in pdf.pages:
-        for table in page.extract_tables() or []:
-            for row in table:
-                cells = [c.strip() for c in row if c]
-                if len(cells) < 2:
-                    continue
-                # 「キャンペーン」列と「金額」列らしきものを両端から推測する
-                name_cell = cells[0]
-                amount_cell = next(
-                    (c for c in reversed(cells) if re.search(r"[\d,]+\s*円?$", c)),
-                    None,
-                )
-                if name_cell and amount_cell and not name_cell.startswith("キャンペーン名"):
-                    items.append((name_cell, amount_cell))
-
-    if items:
-        return items
-
-    # 表が取れなかった場合はテキスト行から拾う。
-    # 「キャンペーン名 消化金額」のような見出し行より後ろだけを明細候補として扱う。
-    for page in pdf.pages:
-        text = page.extract_text() or ""
-        lines = text.splitlines()
-        header_idx = next((i for i, line in enumerate(lines) if TABLE_HEADER_PATTERN.search(line)), None)
-        candidate_lines = lines[header_idx + 1:] if header_idx is not None else lines
-        for line in candidate_lines:
-            m = LINE_ITEM_PATTERN.match(line.strip())
-            if m:
-                items.append((m.group("campaign").strip(), m.group("amount").strip()))
-
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if AMOUNT_ONLY_LINE.match(stripped) and i > 0:
+            campaign = lines[i - 1].strip()
+            if campaign:
+                items.append((campaign, stripped))
     return items
 
 
-def extract_invoice_rows(pdf_path: Path) -> list[InvoiceRow]:
+def extract_invoice_rows(pdf_path: Path, account_name: str) -> list[InvoiceRow]:
     with pdfplumber.open(pdf_path) as pdf:
-        full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-        header = extract_header_fields(full_text)
-        line_items = extract_line_items(pdf)
+        lines: list[str] = []
+        for page in pdf.pages:
+            lines.extend((page.extract_text() or "").splitlines())
+
+    header = extract_header_fields(lines)
+    line_items = extract_line_items(lines)
 
     if not line_items:
         # 明細が拾えなくてもヘッダー情報だけの1行として返す（あとで不備判定される）
-        return [InvoiceRow(**header)]
+        return [InvoiceRow(アカウント名=account_name, **header)]
 
     rows = []
     for campaign, amount in line_items:
@@ -159,7 +155,7 @@ def extract_invoice_rows(pdf_path: Path) -> list[InvoiceRow]:
             日時=header["日時"],
             参照番号=header["参照番号"],
             クレジットカード番号=header["クレジットカード番号"],
-            アカウント名=header["アカウント名"],
+            アカウント名=account_name,
         ))
     return rows
 
@@ -220,10 +216,12 @@ def step1_convert_pdfs_to_excel(source_dir: Path, temp_dir: Path, debug: bool) -
     if not pdf_paths:
         print(f"[警告] PDFが見つかりません: {source_dir}", file=sys.stderr)
 
+    account_name = account_name_from_folder(source_dir)
+
     created: list[Path] = []
     for pdf_path in pdf_paths:
         try:
-            rows = extract_invoice_rows(pdf_path)
+            rows = extract_invoice_rows(pdf_path, account_name)
         except Exception as e:
             print(f"[エラー] PDF読み取り失敗: {pdf_path.name} ({e})", file=sys.stderr)
             rows = [InvoiceRow()]
