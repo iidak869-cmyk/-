@@ -47,6 +47,15 @@ def open_detail_with_retry(page, target_day: str, item: dict, run_log: RunLog) -
     run_log.add_retry(f"再試行に成功しました: {company_name}")
 
 
+def safe_return_to_list(page, target_day: str, run_log: RunLog) -> None:
+    """一覧へ戻る。失敗した場合はログに残し、一覧を開き直して次の報告へ進めるようにする。"""
+    try:
+        hokokkun.return_to_sales_list(page)
+    except Exception as e:
+        run_log.add_error(f"一覧へ戻る操作に失敗したため、一覧を開き直します: {e}")
+        hokokkun.open_sales_list(page, target_day)
+
+
 def process_day(page, target_day: str, known_companies: set[str], run_log: RunLog) -> list[dict]:
     """1日分（前日 or 当日）の営業報告を処理し、新規追加分の詳細データを返す。"""
     hokokkun.open_sales_list(page, target_day)
@@ -57,10 +66,14 @@ def process_day(page, target_day: str, known_companies: set[str], run_log: RunLo
     else:
         run_log.current_day_count = len(items)
 
+    print(f"[{target_day}] 一覧件数: {len(items)}件")
+
     new_details: list[dict] = []
 
-    for item in items:
+    for index, item in enumerate(items, start=1):
         company_name_hint = item.get("company_name", "")
+        print(f"[{target_day}] {index}/{len(items)}件目を処理中: {company_name_hint}")
+
         try:
             open_detail_with_retry(page, target_day, item, run_log)
         except hokokkun.UnauthorizedAccessError as e:
@@ -77,18 +90,18 @@ def process_day(page, target_day: str, known_companies: set[str], run_log: RunLo
         except hokokkun.CompanyNameNotFoundError as e:
             run_log.company_name_failed_count += 1
             run_log.add_error(str(e), company_name_hint)
-            hokokkun.return_to_sales_list(page)
+            safe_return_to_list(page, target_day, run_log)
             continue
         except Exception as e:
             run_log.detail_failed_count += 1
             run_log.add_error(f"詳細取得に失敗しました: {e}", company_name_hint)
-            hokokkun.return_to_sales_list(page)
+            safe_return_to_list(page, target_day, run_log)
             continue
 
         normalized = normalize_company_name(detail.get("company_name", ""))
         if normalized in known_companies:
             run_log.duplicate_skipped_count += 1
-            hokokkun.return_to_sales_list(page)
+            safe_return_to_list(page, target_day, run_log)
             continue
 
         detail["amount"] = clean_amount(item.get("amount", ""))
@@ -96,7 +109,7 @@ def process_day(page, target_day: str, known_companies: set[str], run_log: RunLo
         new_details.append(detail)
         known_companies.add(normalized)
 
-        hokokkun.return_to_sales_list(page)
+        safe_return_to_list(page, target_day, run_log)
 
     return new_details
 
@@ -117,6 +130,7 @@ def save_temp_added_details(temp_directory: Path, added_details: list[dict]) -> 
 
 
 def run(config: Config) -> str:
+    print("実行を開始します。")
     run_log = RunLog(log_directory=config.log_directory)
 
     try:
@@ -129,6 +143,7 @@ def run(config: Config) -> str:
 
     last_data_row = excel_io.find_last_data_row(ws)
     known_companies = excel_io.get_existing_company_names(ws, last_data_row)
+    print(f"Excel読み込み完了。登録済み会社数: {len(known_companies)}件")
 
     all_new_details: list[dict] = []
 
@@ -137,6 +152,7 @@ def run(config: Config) -> str:
         context = browser.new_context()
         page = context.new_page()
 
+        print("ほうこっくんへログイン中...")
         try:
             hokokkun.login_to_hokokkun(page, config)
         except hokokkun.LoginError as e:
@@ -144,6 +160,7 @@ def run(config: Config) -> str:
             browser.close()
             run_log.write(RESULT_FAILED)
             return RESULT_FAILED
+        print("ログイン完了。")
 
         for target_day in DAYS_TO_PROCESS:
             try:
@@ -156,6 +173,7 @@ def run(config: Config) -> str:
                 return RESULT_FAILED
 
         browser.close()
+    print(f"ほうこっくんの処理が完了しました。新規追加対象: {len(all_new_details)}件")
 
     style_source_row = last_data_row if last_data_row > excel_io.HEADER_ROW else None
     next_row = last_data_row + 1
@@ -165,6 +183,7 @@ def run(config: Config) -> str:
         style_source_row = next_row
         next_row += 1
 
+    print("Excelを保存しています...")
     try:
         excel_io.save_workbook_safe(wb, config.excel_file_path)
     except excel_io.ExcelSaveError as e:
@@ -175,6 +194,7 @@ def run(config: Config) -> str:
 
     run_log.excel_save_result = "成功"
     run_log.excel_added_count = len(all_new_details)
+    print("Excel保存完了。")
 
     temp_path = save_temp_added_details(config.temp_directory, all_new_details)
 
@@ -183,6 +203,7 @@ def run(config: Config) -> str:
     elif not all_new_details:
         run_log.sheet_result = "転記対象なし"
     else:
+        print("Googleスプレッドシートへ転記しています...")
         try:
             sheet_rows = [build_sheet_row(detail) for detail in all_new_details]
             transferred = google_sheets.append_rows(
