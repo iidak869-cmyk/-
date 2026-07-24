@@ -26,6 +26,7 @@ class Config:
     google_spreadsheet_id: str
     google_sheet_name: str
     google_credentials_path: str
+    google_oauth_token_path: str
     log_directory: Path
     temp_directory: Path
     browser_headless: bool
@@ -62,6 +63,7 @@ def load_config() -> Config:
         google_spreadsheet_id=os.getenv("GOOGLE_SPREADSHEET_ID", "").strip(),
         google_sheet_name=os.getenv("GOOGLE_SHEET_NAME", "転記データ").strip(),
         google_credentials_path=os.getenv("GOOGLE_CREDENTIALS_PATH", "").strip(),
+        google_oauth_token_path=os.getenv("GOOGLE_OAUTH_TOKEN_PATH", "google_oauth_token.json").strip(),
         log_directory=log_directory,
         temp_directory=temp_directory,
         browser_headless=os.getenv("BROWSER_HEADLESS", "true").strip().lower() != "false",

@@ -42,7 +42,11 @@ def main() -> int:
         try:
             sheet_rows = [build_sheet_row(detail) for detail in added_details]
             transferred = google_sheets.append_rows(
-                config.google_spreadsheet_id, config.google_sheet_name, config.google_credentials_path, sheet_rows
+                config.google_spreadsheet_id,
+                config.google_sheet_name,
+                config.google_credentials_path,
+                config.google_oauth_token_path,
+                sheet_rows,
             )
             print(f"[OK] {transferred}件を転記しました。")
             temp_path.unlink()

@@ -1,5 +1,7 @@
 .env
 google_credentials*.json
+google_oauth_client*.json
+google_oauth_token*.json
 credentials*.json
 temp/*.json
 logs/*.log

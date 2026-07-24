@@ -3,3 +3,4 @@ python-dotenv==1.0.1
 playwright>=1.49
 gspread==6.1.4
 google-auth==2.35.0
+google-auth-oauthlib==1.2.1
