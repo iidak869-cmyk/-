@@ -5,7 +5,7 @@ const readline = require('readline');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 if (!fs.existsSync(CONFIG_PATH)) { console.error('config.json が見つかりません。'); process.exit(1); }
-const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^﻿/, ''));
+const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^\uFEFF/, ''));
 
 const PATHS = {
   downloadDir:      cfg.downloadDir || path.join(process.env.USERPROFILE || '', 'Downloads'),
@@ -14,6 +14,14 @@ const PATHS = {
   copyDestDir:      cfg.copyDestDir,
   airworkSession:   path.join(__dirname, 'airwork_session.json'),
   dodaSession:      path.join(__dirname, 'doda_session.json'),
+  gsheetSession:    cfg.gsheetSession || path.join('C:\\Users\\iida869\\Desktop\\rpa-playwright', 'gsheet_session.json'),
+};
+
+const DASHBOARD = {
+  url:              cfg.dashboardUrl             || 'https://docs.google.com/spreadsheets/d/1iBZpnoQ7NwTdHYQ-ATY359O8vxGkLm93/edit#gid=104596327',
+  statusCell:       cfg.dashboardStatusCell      || 'D24',
+  startDateCell:    cfg.dashboardStartDateCell   || 'F24',
+  completeDateCell: cfg.dashboardCompleteDateCell|| 'G24',
 };
 
 const AIRWORK_URL = 'https://ats.rct.airwork.net/';
@@ -43,9 +51,8 @@ function safeCopy(src, destDir, destName) {
   return dest;
 }
 
-function yesterday() {
+function today() {
   const d = new Date();
-  d.setDate(d.getDate() - 1);
   return d.getFullYear() + '/' + String(d.getMonth()+1).padStart(2,'0') + '/' + String(d.getDate()).padStart(2,'0');
 }
 
@@ -67,12 +74,12 @@ function parseCsv(text) {
   return rows;
 }
 
-function extractPrevDayApplicants(csvPath, source) {
-  const raw = fs.readFileSync(csvPath).toString('utf8').replace(/^﻿/, '');
+function extractApplicants(csvPath, source) {
+  const raw = fs.readFileSync(csvPath).toString('utf8').replace(/^\uFEFF/, '');
   const rows = parseCsv(raw);
   if (rows.length < 2) return [];
   const headers = rows[0].map(h => h.trim());
-  const yest = yesterday();
+  const targetDate = today();
   const get = (r, name) => { const idx = headers.indexOf(name); return idx >= 0 && idx < r.length ? (r[idx]||'').trim() : ''; };
   const results = [];
   for (let i = 1; i < rows.length; i++) {
@@ -80,7 +87,7 @@ function extractPrevDayApplicants(csvPath, source) {
     if (!r || r.every(c => !c)) continue;
     const rawDate = get(r,'応募日時') || get(r,'応募日');
     const applyDate = rawDate.substring(0,10).replace(/-/g,'/');
-    if (applyDate !== yest) continue;
+    if (applyDate !== targetDate) continue;
     results.push({
       name:      get(r,'応募者名'),
       kana:      get(r,'ふりがな'),
@@ -97,6 +104,70 @@ function extractPrevDayApplicants(csvPath, source) {
   return results;
 }
 
+async function gotoCell(page, cellRef) {
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  const clicked = await page.locator('[aria-label="Cell reference"]').first()
+    .click({ timeout: 3000 }).then(() => true).catch(() => false);
+  if (!clicked) {
+    await page.locator('.goog-editor-field, [class*="name-box"]').first()
+      .click({ timeout: 3000 }).catch(() => {});
+  }
+  await page.waitForTimeout(200);
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type(cellRef);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(600);
+}
+
+async function updateDashboard(browser, status, completedDate) {
+  console.log('');
+  console.log('ダッシュボード更新: ' + status + ' ...');
+  const contextOpts = fs.existsSync(PATHS.gsheetSession) ? { storageState: PATHS.gsheetSession } : {};
+  const context = await browser.newContext(contextOpts);
+  const page    = await context.newPage();
+  try {
+    await page.goto(DASHBOARD.url, { waitUntil: 'networkidle', timeout: 60000 });
+    if (!page.url().includes('spreadsheets')) {
+      console.log('  Googleログインが必要です。ブラウザでログインしてください。');
+      await waitEnter('  ログイン後 Enter を押してください...');
+      await context.storageState({ path: PATHS.gsheetSession });
+      await page.goto(DASHBOARD.url, { waitUntil: 'networkidle', timeout: 60000 });
+    }
+    await page.waitForTimeout(4000);
+    await gotoCell(page, DASHBOARD.statusCell);
+    await page.keyboard.type(status);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(400);
+    if (status === '進行中') {
+      await gotoCell(page, DASHBOARD.startDateCell);
+      const current = await page.evaluate(() => {
+        const el = document.activeElement;
+        return el ? el.textContent : '';
+      });
+      if (!current || current.trim() === '') {
+        await page.keyboard.type(today());
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(400);
+      } else {
+        await page.keyboard.press('Escape');
+      }
+    }
+    if (completedDate) {
+      await gotoCell(page, DASHBOARD.completeDateCell);
+      await page.keyboard.type(completedDate);
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(400);
+    }
+    await context.storageState({ path: PATHS.gsheetSession });
+    console.log('  ダッシュボード更新完了');
+  } catch (err) {
+    console.log('  ダッシュボード更新スキップ: ' + err.message);
+  } finally {
+    await context.close();
+  }
+}
+
 async function downloadManual(browser, url, sessionPath, siteName) {
   const contextOpts = fs.existsSync(sessionPath) ? { storageState: sessionPath } : {};
   const context = await browser.newContext({ ...contextOpts, acceptDownloads: true });
@@ -107,7 +178,7 @@ async function downloadManual(browser, url, sessionPath, siteName) {
   console.log('========================================');
   console.log('[' + siteName + '] ブラウザで操作してください:');
   console.log('  1. ログイン（未ログインの場合）');
-  console.log('  2. 応募者一覧のCSVをダウンロード');
+  console.log('  2. 当日の応募者一覧CSVをダウンロード');
   console.log('  3. ダウンロード完了後、ここに戻る');
   console.log('========================================');
   await waitEnter('ダウンロード完了後、Enterを押してください...');
@@ -148,11 +219,11 @@ async function writeToExcel(airworkCsv, dodaCsv) {
   const ddDest = path.join(PATHS.applicantListDir, '応募者リスト(doda).csv');
   fs.copyFileSync(airworkCsv, awDest);
   fs.copyFileSync(dodaCsv, ddDest);
-  const awA = extractPrevDayApplicants(awDest, 'airwork');
-  const ddA = extractPrevDayApplicants(ddDest, 'doda');
-  console.log('  AirWORK前日分: ' + awA.length + '件 / doda前日分: ' + ddA.length + '件');
+  const awA = extractApplicants(awDest, 'airwork');
+  const ddA = extractApplicants(ddDest, 'doda');
+  console.log('  AirWORK当日分: ' + awA.length + '件 / doda当日分: ' + ddA.length + '件');
   const all = [...awA, ...ddA];
-  if (all.length === 0) console.log('  ※前日の応募者データが0件でした');
+  if (all.length === 0) console.log('  ※当日の応募者データが0件でした');
   let nextRow = sheet.lastRow ? sheet.lastRow.number + 1 : 2;
   for (const a of all) {
     const row = sheet.getRow(nextRow);
@@ -178,9 +249,11 @@ async function writeToExcel(airworkCsv, dodaCsv) {
 (async () => {
   const browser = await chromium.launch({ headless: false });
   try {
+    await updateDashboard(browser, '進行中', null);
     const airworkCsv = await downloadManual(browser, AIRWORK_URL, PATHS.airworkSession, 'AirWORK');
     const dodaCsv    = await downloadManual(browser, DODA_URL,    PATHS.dodaSession,    'doda');
     await writeToExcel(airworkCsv, dodaCsv);
+    await updateDashboard(browser, '完了', today());
     console.log('');
     console.log('すべての処理が完了しました。');
   } catch (err) {
