@@ -116,21 +116,58 @@ def open_sales_detail(page: Page, item: dict) -> None:
 
 
 # 詳細画面の項目ラベル→取得結果のキーの対応。「現在の状況」列の値をそのまま使う項目のみ。
+# （項目名は詳細画面の表の行として、そのまま1つずつ存在するもの）
 DETAIL_LABEL_TO_FIELD = {
     "営業方法": "sales_method",
     "結果": "result",
     "営業担当": "sales_staff",
+    "営業担当所属部署": "sales_staff_dept",
     "同行": "accompany",
     "種類": "type",
     "更新日時": "updated_at_raw",
     "営業日時": "meeting_datetime_raw",
+    "入り直し等": "re_visit",
     "会社名": "company_name",
+    "会社名（フリガナ）": "company_name_kana",
     "会社所在地": "company_address",
     "代表者名": "representative",
+    "代表者名（フリガナ）": "representative_kana",
     "業種": "industry",
+    "メールアドレス1": "email1",
+    "メールアドレス2": "email2",
+    "営業場所": "sales_location",
     "アポ担当": "appointment_staff",
+    "アポ担当所属部署": "appointment_staff_dept",
+    "交際費について": "entertainment_expense",
+    "入電": "incoming_call1",
+    "中電": "incoming_call2",
+    "出る電": "outgoing_call1",
+    "出た電": "outgoing_call2",
     "納品物件": "delivery_item",
+    "金額（税込）": "amount_detail_raw",
+    "発信規制番号": "call_restricted_numbers",
+    "挨拶訪問": "greeting_visit",
     "NG理由": "ng_reason",
+}
+
+# 「報告内容」欄（自由記述）の中に、【ラベル】という形でまとまっているサブ項目。
+# ラベル→取得結果のキーの対応。
+REPORT_CONTENT_LABEL_TO_FIELD = {
+    "前払い": "advance_payment",
+    "SMSシステム申込": "sms_application_raw",
+    "デ打ち/Cytekiサポート営業同行": "cyteki_support_accompany",
+    "人柄": "personality",
+    "制作するオーナーの事業内容": "owner_business",
+    "アピールポイント/褒めポイント": "appeal_points",
+    "ターゲット": "target",
+    "提案内容": "proposal_content",
+    "提案商材": "proposed_product_raw",
+    "代表番号以外で教えた番号": "other_number_told",
+    "身分証": "identification",
+    "契約時に屋号を決めた理由": "business_name_reason",
+    "共同経営者": "co_owner",
+    "挨拶zoom": "greeting_zoom",
+    "確認電話番号": "confirmation_phone",
 }
 
 _MEETING_TIME_RE = re.compile(r"(\d{1,2}:\d{2}\s*[〜~\-]\s*\d{1,2}:\d{2})")
@@ -138,6 +175,37 @@ _CREDIT_CARD_RE = re.compile(r"クレカ[^\n】]*】\s*(持|未所持)")
 _INITIAL_COLLECTION_RE = re.compile(r"初期[^\n】]*】\s*①期日[:：]\s*([^\n]*)")
 _YEAR_RE = re.compile(r"(\d{4})年")
 _MONTH_DAY_RE = re.compile(r"(\d{1,2})月(\d{1,2})日")
+_INITIAL_FEE_RE = re.compile(r"\[初期費用\]\s*([^\n\[]*)")
+_SMS_MEMBER_RE = re.compile(r"会員情報[:：]\s*([^\n]*)")
+
+# 「提案商材」欄の選択肢（①〜⑧の丸数字）と、その商品名の対応。
+PROPOSED_PRODUCT_OPTIONS = {
+    "①": "Cyteki(ライト集客)",
+    "②": "Cyteki(ライト求人)",
+    "③": "Cyteki(スタンダード集客)",
+    "④": "Cyteki(スタンダード求人)",
+    "⑤": "Cyteki(フルパック)",
+    "⑥": "DegiOne(LP)",
+    "⑦": "DegiOne(HP)",
+    "⑧": "DegiOne(LINE)",
+}
+_PROPOSED_PRODUCT_ARROW_RE = re.compile(r"→\s*([①②③④⑤⑥⑦⑧]+)")
+
+
+def _parse_proposed_product(raw: str) -> str:
+    """「提案商材」欄の「→①」のような矢印＋丸数字を、実際の商品名へ変換する。"""
+    match = _PROPOSED_PRODUCT_ARROW_RE.search(raw)
+    if not match:
+        return ""
+    chosen = [PROPOSED_PRODUCT_OPTIONS[mark] for mark in match.group(1) if mark in PROPOSED_PRODUCT_OPTIONS]
+    return "、".join(chosen)
+
+
+def _extract_report_content_section(report_content: str, label: str) -> str:
+    """「報告内容」内の【ラベル】...次の【 まで、を抜き出す（見出しの表記ゆれを許容する）。"""
+    pattern = re.compile(re.escape("【" + label) + r"[^】]*】\s*(.*?)(?=【|\Z)", re.S)
+    match = pattern.search(report_content)
+    return match.group(1).strip() if match else ""
 
 
 def extract_sales_detail(page: Page) -> dict:
@@ -190,6 +258,24 @@ def extract_sales_detail(page: Page) -> dict:
 
     # 契約形態は納品物件の値をそのまま使う。
     detail["contract_type"] = detail.get("delivery_item", "")
+
+    # 金額（税込）の行から初期費用だけを取り出す。
+    amount_detail_raw = detail.pop("amount_detail_raw", "")
+    initial_fee_match = _INITIAL_FEE_RE.search(amount_detail_raw)
+    detail["initial_fee"] = initial_fee_match.group(1).strip() if initial_fee_match else ""
+
+    # 「報告内容」欄の中の各サブ項目を取り出す。
+    for label, field in REPORT_CONTENT_LABEL_TO_FIELD.items():
+        detail[field] = _extract_report_content_section(report_content, label)
+
+    detail["proposed_product"] = _parse_proposed_product(detail.get("proposed_product_raw", ""))
+    detail.pop("proposed_product_raw", None)
+
+    sms_raw = detail.pop("sms_application_raw", "")
+    sms_lines = [line.strip() for line in sms_raw.splitlines() if line.strip()]
+    detail["sms_application_status"] = sms_lines[0] if sms_lines else ""
+    sms_member_match = _SMS_MEMBER_RE.search(sms_raw)
+    detail["sms_member_info"] = sms_member_match.group(1).strip() if sms_member_match else ""
 
     if not detail.get("company_name", "").strip():
         raise CompanyNameNotFoundError("詳細画面から会社名を取得できませんでした。")
