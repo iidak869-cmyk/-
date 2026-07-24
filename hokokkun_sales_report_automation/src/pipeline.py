@@ -7,9 +7,10 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from . import excel_io, hokokkun
+from . import excel_io, google_sheets, hokokkun
 from .config import Config
 from .logger import (
+    RESULT_EXCEL_SUCCESS_SHEET_FAILED,
     RESULT_FAILED,
     RESULT_PARTIAL_SUCCESS,
     RESULT_SUCCESS,
@@ -17,6 +18,7 @@ from .logger import (
 )
 from .mapping import build_excel_row_values, clean_amount
 from .normalize import normalize_company_name
+from .sheet_mapping import build_sheet_row
 
 DAYS_TO_PROCESS = ["前日", "当日"]
 
@@ -46,7 +48,7 @@ def open_detail_with_retry(page, target_day: str, item: dict, run_log: RunLog) -
 
 
 def process_day(page, target_day: str, known_companies: set[str], run_log: RunLog) -> list[dict]:
-    """1日分（前日 or 当日）の営業報告を処理し、新規追加分の行データを返す。"""
+    """1日分（前日 or 当日）の営業報告を処理し、新規追加分の詳細データを返す。"""
     hokokkun.open_sales_list(page, target_day)
     items = hokokkun.get_sales_list_items(page)
 
@@ -55,7 +57,7 @@ def process_day(page, target_day: str, known_companies: set[str], run_log: RunLo
     else:
         run_log.current_day_count = len(items)
 
-    new_rows: list[dict] = []
+    new_details: list[dict] = []
 
     for item in items:
         company_name_hint = item.get("company_name", "")
@@ -91,23 +93,26 @@ def process_day(page, target_day: str, known_companies: set[str], run_log: RunLo
 
         detail["amount"] = clean_amount(item.get("amount", ""))
 
-        row_values = build_excel_row_values(detail)
-        new_rows.append(row_values)
+        new_details.append(detail)
         known_companies.add(normalized)
 
         hokokkun.return_to_sales_list(page)
 
-    return new_rows
+    return new_details
 
 
-def save_temp_added_rows(temp_directory: Path, added_rows: list[dict]) -> Path | None:
-    if not added_rows:
+def save_temp_added_details(temp_directory: Path, added_details: list[dict]) -> Path | None:
+    """今回追加した詳細データを一時JSONへ保存する。
+
+    Excel保存後にGoogleスプレッドシートへの転記だけ失敗した場合に備えて、
+    転記が完了するまではこのファイルを残しておく。
+    """
+    if not added_details:
         return None
     temp_directory.mkdir(parents=True, exist_ok=True)
-    path = temp_directory / f"added_rows_{datetime.now():%Y%m%d_%H%M%S}.json"
-    serializable = [{str(col): value for col, value in row.items()} for row in added_rows]
+    path = temp_directory / f"added_details_{datetime.now():%Y%m%d_%H%M%S}.json"
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(serializable, f, ensure_ascii=False, indent=2)
+        json.dump(added_details, f, ensure_ascii=False, indent=2)
     return path
 
 
@@ -125,7 +130,7 @@ def run(config: Config) -> str:
     last_data_row = excel_io.find_last_data_row(ws)
     known_companies = excel_io.get_existing_company_names(ws, last_data_row)
 
-    all_new_rows: list[dict] = []
+    all_new_details: list[dict] = []
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=config.browser_headless)
@@ -142,8 +147,8 @@ def run(config: Config) -> str:
 
         for target_day in DAYS_TO_PROCESS:
             try:
-                day_rows = process_day(page, target_day, known_companies, run_log)
-                all_new_rows.extend(day_rows)
+                day_details = process_day(page, target_day, known_companies, run_log)
+                all_new_details.extend(day_details)
             except Exception as e:
                 run_log.add_error(f"{target_day}の営業一覧を表示できませんでした: {e}")
                 browser.close()
@@ -154,7 +159,8 @@ def run(config: Config) -> str:
 
     style_source_row = last_data_row if last_data_row > excel_io.HEADER_ROW else None
     next_row = last_data_row + 1
-    for row_values in all_new_rows:
+    for detail in all_new_details:
+        row_values = build_excel_row_values(detail)
         excel_io.append_row(ws, next_row, row_values, style_source_row)
         style_source_row = next_row
         next_row += 1
@@ -168,14 +174,29 @@ def run(config: Config) -> str:
         return RESULT_FAILED
 
     run_log.excel_save_result = "成功"
-    run_log.excel_added_count = len(all_new_rows)
+    run_log.excel_added_count = len(all_new_details)
 
-    save_temp_added_rows(config.temp_directory, all_new_rows)
+    temp_path = save_temp_added_details(config.temp_directory, all_new_details)
 
-    if config.enable_google_sheets:
-        run_log.sheet_result = "未実装（第4段階で実装予定）"
+    if not config.enable_google_sheets:
+        run_log.sheet_result = "無効化（.envでENABLE_GOOGLE_SHEETSがfalse）"
+    elif not all_new_details:
+        run_log.sheet_result = "転記対象なし"
     else:
-        run_log.sheet_result = "無効化（第4段階で有効化予定）"
+        try:
+            sheet_rows = [build_sheet_row(detail) for detail in all_new_details]
+            transferred = google_sheets.append_rows(
+                config.google_spreadsheet_id, config.google_sheet_name, config.google_credentials_path, sheet_rows
+            )
+            run_log.sheet_transferred_count = transferred
+            run_log.sheet_result = "成功"
+            if temp_path and temp_path.exists():
+                temp_path.unlink()
+        except google_sheets.GoogleSheetsError as e:
+            run_log.sheet_result = f"失敗: {e}"
+            run_log.add_error(str(e))
+            run_log.write(RESULT_EXCEL_SUCCESS_SHEET_FAILED)
+            return RESULT_EXCEL_SUCCESS_SHEET_FAILED
 
     if run_log.detail_failed_count or run_log.company_name_failed_count:
         overall_result = RESULT_PARTIAL_SUCCESS
