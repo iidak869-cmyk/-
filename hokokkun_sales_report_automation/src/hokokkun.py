@@ -147,6 +147,7 @@ DETAIL_LABEL_TO_FIELD = {
     "金額（税込）": "amount_detail_raw",
     "発信規制番号": "call_restricted_numbers",
     "挨拶訪問": "greeting_visit",
+    "内緒": "secret",
     "NG理由": "ng_reason",
 }
 
