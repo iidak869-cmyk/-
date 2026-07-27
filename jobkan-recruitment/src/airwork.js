@@ -26,8 +26,9 @@ async function downloadAirworkApplicants(page) {
   console.log('[AirWORK] ログイン完了');
 
   // 手順2: メニューバーの「応募者」を選択
-  // TODO(要確認): メニュー項目がリンクかボタンか要確認
-  await page.getByRole('link', { name: '応募者' }).click();
+  // 実画面で確認済み: exact指定が無いと「応募者を管理する」等の他リンクにも
+  // 部分一致してしまうため、exact: true で完全一致のメニューリンクに絞る
+  await page.getByRole('link', { name: '応募者', exact: true }).click();
   await page.waitForLoadState('networkidle');
   console.log('[AirWORK] 応募者ページへ遷移しました');
 
