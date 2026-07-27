@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import google_sheets
 from src.config import ConfigError, load_config
-from src.sheet_mapping import build_sheet_row
+from src.mapping import build_sheet_row
 
 
 def main() -> int:

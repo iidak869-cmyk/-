@@ -77,3 +77,17 @@ def build_excel_row_values(detail: dict) -> dict[int, object]:
     }
     values.update(determine_delivery_marks(detail.get("delivery_item", "")))
     return values
+
+
+def build_sheet_row(detail: dict) -> list:
+    """Googleスプレッドシート用に、Excelと同じ列構成（A〜AB列）の1行分リストを作る。
+
+    転記先のテスト用スプレッドシートは、営業報告データベースExcelと
+    まったく同じ列構成（契約日〜初期回収）のため、Excel用の値をそのまま
+    列の並び順に変換するだけでよい。
+    """
+    values = build_excel_row_values(detail)
+    row = [""] * excel_io.COL_INITIAL_COLLECTION
+    for col, value in values.items():
+        row[col - 1] = value
+    return row
