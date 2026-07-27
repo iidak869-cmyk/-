@@ -3,6 +3,11 @@ const ExcelJS = require('exceljs');
 const config = require('./config');
 const { parseAirworkCsv } = require('./parsers/airworkCsv');
 const { parseDodaCsv } = require('./parsers/dodaCsv');
+const {
+  parseApplicantExportFile,
+  findLatestDatedSubfolder,
+  listApplicantExportFiles,
+} = require('./parsers/applicantCsvFolder');
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -100,11 +105,38 @@ async function reflectAirworkAndDoda({
 }
 
 /**
- * 手順21: 応募者数CSVフォルダ内の各Excelファイルから前日応募者を抽出し、反映用リスト.xlsxに追記する
- * TODO: サンプルファイル受領後に実装予定（未実装）
+ * 手順21: 応募者数CSVフォルダ内にある「現在日時のフォルダ」内の各ファイル
+ * （LINE/Instagram等、媒体ごとのマーケティングツールからのエクスポート）から
+ * 直近24時間以内の応募者を抽出し、反映用リスト.xlsxに追記する。
+ *
+ * TODO(要確認): サブフォルダの命名規則が未確認のため、現状は
+ * 「応募者数CSVフォルダ直下で更新日時が最も新しいサブフォルダ」を対象にしている。
  */
-async function reflectApplicantCsvFolder() {
-  throw new Error('reflectApplicantCsvFolder is not implemented yet (サンプルファイル待ち)');
+async function reflectApplicantCsvFolder({
+  rootDir = config.applicantCsvRootDir,
+  excelPath = config.reflectExcelPath,
+  referenceDate = new Date(),
+} = {}) {
+  const targetDir = findLatestDatedSubfolder(rootDir);
+  if (!targetDir) {
+    console.log(`[反映] 応募者数CSVフォルダに対象サブフォルダが見つかりませんでした: ${rootDir}`);
+    return { fileCount: 0, recordCount: 0 };
+  }
+
+  const files = listApplicantExportFiles(targetDir);
+  let recordCount = 0;
+
+  for (const filePath of files) {
+    const records = filterWithinLast24Hours(
+      await parseApplicantExportFile(filePath),
+      referenceDate
+    );
+    const count = await appendApplicantsToReflectExcel(excelPath, records);
+    recordCount += count;
+    console.log(`[反映] ${path.basename(filePath)} の直近24時間の応募者 ${count}件を追記しました`);
+  }
+
+  return { fileCount: files.length, recordCount };
 }
 
 module.exports = {

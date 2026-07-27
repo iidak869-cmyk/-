@@ -4,7 +4,7 @@ const { chromium } = require('playwright');
 const config = require('./config');
 const { downloadAirworkApplicants } = require('./airwork');
 const { downloadDodaApplicants } = require('./doda');
-const { reflectAirworkAndDoda } = require('./excel');
+const { reflectAirworkAndDoda, reflectApplicantCsvFolder } = require('./excel');
 const { copyReflectExcelToSharedDrive } = require('./copyToSharedDrive');
 
 function ensureDir(dirPath) {
@@ -56,10 +56,8 @@ async function main() {
     // --- 反映用リスト.xlsxへの転記（手順19〜20） ---
     await reflectAirworkAndDoda();
 
-    // 手順21（応募者数CSVフォルダからの転記）はサンプル待ちのため未実装
-    console.log(
-      '応募者数CSVフォルダからの転記（手順21）は、サンプルファイル受領後に追加実装予定です。'
-    );
+    // --- 応募者数CSVフォルダからの転記（手順21） ---
+    await reflectApplicantCsvFolder();
 
     // --- 共有ドライブへのコピー（手順22） ---
     copyReflectExcelToSharedDrive();
