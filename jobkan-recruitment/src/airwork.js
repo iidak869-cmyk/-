@@ -17,10 +17,10 @@ async function downloadAirworkApplicants(page) {
   console.log('[AirWORK] ログインページへ移動します');
   await page.goto(config.airwork.loginUrl);
 
-  // TODO(要確認): ID/パスワード欄のラベル・placeholder は実画面で要確認
-  await page.getByLabel(/ログインID|ID|メールアドレス/).fill(config.airwork.id());
-  await page.getByLabel(/パスワード/).fill(config.airwork.password());
-  await page.getByRole('button', { name: /ログイン/ }).click();
+  // 実画面で確認済み: AirIDログイン画面はlabelが無くplaceholderのみで入力欄を識別する
+  await page.getByPlaceholder('AirIDまたはメールアドレス').fill(config.airwork.id());
+  await page.getByPlaceholder('パスワード').fill(config.airwork.password());
+  await page.getByRole('button', { name: 'ログイン' }).click();
 
   await page.waitForLoadState('networkidle');
   console.log('[AirWORK] ログイン完了');
