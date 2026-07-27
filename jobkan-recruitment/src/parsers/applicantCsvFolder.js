@@ -41,8 +41,8 @@ function parseRegisteredAt(value) {
   return new Date(y, mo - 1, d, hh, mm, ss);
 }
 
-// TODO(要確認): 「経路」はシナリオ名（例: "★稼働中【WeeAre公式】Instagram"）の
-// 末尾（最後の "】" より後ろ）を媒体名として抽出している。この判定基準でよいか要確認。
+// 「経路」はシナリオ名（例: "★稼働中【WeeAre公式】Instagram"）の末尾（最後の "】" より後ろ）を
+// 媒体名として抽出する。カッコ内のタグ（"WeeAre公式" "えの" 等）が異なる複数サンプルで確認済み。
 function extractRouteFromScenario(scenarioName, fallback) {
   if (!scenarioName) return fallback;
   const idx = scenarioName.lastIndexOf('】');
