@@ -111,15 +111,20 @@ async function parseApplicantExportFile(filePath) {
  */
 function findLatestDatedSubfolder(rootDir) {
   if (!fs.existsSync(rootDir)) return null;
-  const entries = fs
-    .readdirSync(rootDir, { withFileTypes: true })
+  const dirents = fs.readdirSync(rootDir, { withFileTypes: true });
+  const subfolders = dirents
     .filter((e) => e.isDirectory())
     .map((e) => {
       const fullPath = path.join(rootDir, e.name);
       return { fullPath, mtime: fs.statSync(fullPath).mtimeMs };
     })
     .sort((a, b) => b.mtime - a.mtime);
-  return entries.length > 0 ? entries[0].fullPath : null;
+  if (subfolders.length > 0) return subfolders[0].fullPath;
+
+  // サブフォルダが無く、直下にファイルがある場合はルート自体を対象にする
+  // （日付フォルダ構成が未確定の間の暫定フォールバック）
+  const hasFiles = dirents.some((e) => e.isFile());
+  return hasFiles ? rootDir : null;
 }
 
 /**
