@@ -70,7 +70,14 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('処理中にエラーが発生しました:', err);
-  process.exitCode = 1;
-});
+// 共有ドライブ(ネットワークドライブ)へのアクセスがハングし、タイムアウト後も
+// 内部のI/Oハンドルが残ってプロセスが自然終了しないことがあるため、
+// 処理完了後は明示的にprocess.exit()でプロセスを終了させる。
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error('処理中にエラーが発生しました:', err);
+    process.exit(1);
+  });
