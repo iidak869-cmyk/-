@@ -50,7 +50,8 @@ async function downloadAirworkApplicants(page) {
   // ログアウトは左上の「weeare」（Air ID共通のアカウント切替メニュー）から行う。
   // "weeare"テキストは入れ子のdiv/spanの両方にマッチするため .first() で絞る
   await page.getByText('weeare', { exact: true }).first().click();
-  await page.getByRole('button', { name: /ログアウト/ }).click();
+  // 「ログアウト」がbutton roleとして認識されなかったため、テキストベースで指定
+  await page.getByText('ログアウト').first().click();
   console.log('[AirWORK] ログアウトしました');
 
   return targetPath;
