@@ -13,7 +13,7 @@ from pathlib import Path
 from playwright.async_api import async_playwright, Page
 
 # ===== 設定 =====
-FOLDER_PATH = Path(r"G:\共有ドライブ\RPA運用-品質保証課連携")
+FOLDER_PATH = Path(r"G:\共有ドライブ\RPA運用-技術課連携\RPA運用-品質保証課連携テスト")
 TARGET_FILES = [
     "更新代行反映CMS1.xlsx",
     "更新代行反映CMS5.xlsx",
