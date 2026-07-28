@@ -56,24 +56,21 @@ async function downloadDodaApplicants(page) {
   await page.getByRole('link', { name: 'この条件で検索' }).click();
   console.log('[doda] 検索を実行しました');
 
-  // 本日の応募が0件の日もあり得るため、「該当する応募者情報はありません」
-  // （0件時のメッセージ）と、検索結果ありの場合に出るチェックボックスの
-  // どちらが先に表示されるかで判定する
-  const noResultsLocator = page.getByText('該当する応募者情報はありません').first();
-  const resultsCheckboxLocator = page.locator('.ui-igcheckbox-normal-off').first();
-  const outcome = await Promise.race([
-    noResultsLocator.waitFor({ state: 'visible', timeout: 20000 }).then(() => 'empty'),
-    resultsCheckboxLocator.waitFor({ state: 'visible', timeout: 20000 }).then(() => 'has-results'),
-  ]);
+  // 本日の応募が0件の日もあり得るため、件数表示（例:「0件中 0件を表示」）で判定する。
+  // ヘッダーのチェックボックスは0件でも常に表示されてしまうため判定材料にできない。
+  const countLocator = page.getByText(/\d+件中\s*\d+件を表示/).first();
+  await countLocator.waitFor({ state: 'visible', timeout: 20000 });
+  const countText = ((await countLocator.textContent()) || '').trim();
+  const isEmpty = /^0件中/.test(countText);
 
   let targetPath = null;
 
-  if (outcome === 'empty') {
-    console.log('[doda] 本日分の応募者は0件でした。CSV出力をスキップします。');
+  if (isEmpty) {
+    console.log(`[doda] 本日分の応募者は0件でした（表示: ${countText}）。CSV出力をスキップします。`);
   } else {
     // 手順12: 検索結果上部のチェックボックスを選択
     // 実画面で確認済み: Infragistics製の独自チェックボックスウィジェット
-    await resultsCheckboxLocator.click();
+    await page.locator('.ui-igcheckbox-normal-off').first().click();
 
     // 手順13: プルダウンを「応募者情報をCSV出力する」にして実行
     // 実画面で確認済み: ネイティブのselectではなく、クリックで開く独自ドロップダウン
