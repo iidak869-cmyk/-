@@ -28,8 +28,10 @@ async function downloadAirworkApplicants(page) {
 
   // 手順2: メニューバーの「応募者」を選択
   // 実画面で確認済み: exact指定が無いと「応募者を管理する」等の他リンクにも
-  // 部分一致してしまうため、exact: true で完全一致のメニューリンクに絞る
-  await page.getByRole('link', { name: '応募者', exact: true }).click();
+  // 部分一致してしまうため、exact: true で完全一致のメニューリンクに絞る。
+  // ログイン後のOAuthリダイレクトがまだ完了していないことがあるため
+  // タイムアウトを伸ばす
+  await page.getByRole('link', { name: '応募者', exact: true }).click({ timeout: 60000 });
   console.log('[AirWORK] 応募者ページへ遷移しました');
 
   // 手順3: 最下部の「応募者一覧をダウンロード」ボタンを選択し、ダウンロードを捕捉
