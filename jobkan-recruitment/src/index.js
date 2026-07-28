@@ -39,6 +39,9 @@ async function main() {
   try {
     // --- AirWORK（手順1〜7） ---
     const airworkContext = await browser.newContext({ acceptDownloads: true });
+    // サイト側の反応が遅い日があるため、個別のlocatorごとにtimeoutを指定するのではなく
+    // コンテキート全体の既定タイムアウトを底上げしておく
+    airworkContext.setDefaultTimeout(60000);
     const airworkPage = await airworkContext.newPage();
     await withDebugOnError(airworkPage, 'airwork', () =>
       downloadAirworkApplicants(airworkPage)
@@ -47,6 +50,7 @@ async function main() {
 
     // --- doda（手順8〜17） ---
     const dodaContext = await browser.newContext({ acceptDownloads: true });
+    dodaContext.setDefaultTimeout(60000);
     const dodaPage = await dodaContext.newPage();
     await withDebugOnError(dodaPage, 'doda', () => downloadDodaApplicants(dodaPage));
     await dodaContext.close();
