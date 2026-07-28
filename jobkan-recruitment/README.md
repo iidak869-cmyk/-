@@ -153,6 +153,47 @@ jobkan-recruitment/
 `APPLICANT_LIST_DIR` 等の実フォルダが用意でき次第、`.env` のパスを本番パスに書き換えるだけで
 そのまま本番フォルダに保存されるようになります。
 
+## 別のPCへ移行する手順
+
+1. **新しいPCにNode.jsをインストール**（未インストールの場合）
+   https://nodejs.org/ からLTS版をダウンロードしてインストール
+
+2. **コードを新しいPCに取得**（gitが無い場合はZIPダウンロードでOK）
+
+   ```powershell
+   cd C:\Users\<ユーザー名>
+   Invoke-WebRequest -Uri "https://github.com/iidak869-cmyk/-/archive/refs/heads/claude/jobkan-recruitment-automation-773l7j.zip" -OutFile "jobkan.zip"
+   Expand-Archive -Path "jobkan.zip" -DestinationPath "jobkan-extracted"
+   cd jobkan-extracted
+   dir
+   ```
+
+   表示されたフォルダ名の中に入り、さらに `jobkan-recruitment` フォルダに移動する。
+
+3. **依存パッケージをインストール**
+
+   ```powershell
+   npm install
+   ```
+
+4. **`.env` を移行する（重要）**
+
+   `.env` にはログイン情報が入っているため、セキュリティ上の理由でgit管理・ZIP配布の対象外になっています。
+   **自動では付いてこないので、必ず手動でコピーしてください。** 方法はどちらでも構いません。
+
+   - 元のPCの `jobkan-recruitment\.env` ファイルをUSBメモリ等で新しいPCにコピーする
+   - または、元のPCで `notepad .env` を開いて中身を全選択コピーし、新しいPC側で `copy .env.example .env` した後 `notepad .env` で中身を貼り替える
+
+5. **動作確認**
+
+   ```powershell
+   npm start
+   ```
+
+   これまで通り `HEADLESS=false` で動作を確認し、問題なければ完了です。
+
+   ※ 元のPCで動いていた `work\応募者リスト` フォルダ等のCSVファイル自体は移行不要です（実行するたびに新しく作られます）。
+
 ## クラウド実行（タスクスケジューラを使わない場合）について
 
 Windowsタスクスケジューラの代わりにClaude Codeのルーチン機能でクラウド実行することも可能ですが、
