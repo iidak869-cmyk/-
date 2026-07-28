@@ -64,7 +64,7 @@ async function main() {
     await reflectApplicantCsvFolder();
 
     // --- 共有ドライブへのコピー（手順22） ---
-    copyReflectExcelToSharedDrive();
+    await copyReflectExcelToSharedDrive();
   } finally {
     await browser.close();
   }
