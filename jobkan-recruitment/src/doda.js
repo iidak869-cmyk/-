@@ -97,10 +97,10 @@ async function downloadDodaApplicants(page) {
   }
 
   // 手順14: ログアウト
-  // TODO(要確認): ログアウト導線は実画面で要確認（AirWORKと同様に、右上の
-  // アカウントメニューとは別の場所にある可能性があるので要注意）
-  await page.getByRole('button', { name: /アカウント|メニュー/ }).click();
-  await page.getByRole('link', { name: 'ログアウト' }).click();
+  // 実画面で確認済み: 右上の会社名（株式会社Weプラス）をクリックするとメニューが開き、
+  // 「ログアウト」が表示される。button/link roleではない可能性があるためテキストで指定
+  await page.getByText('株式会社Weプラス', { exact: true }).first().click();
+  await page.getByText('ログアウト', { exact: true }).first().click();
   console.log('[doda] ログアウトしました');
 
   return targetPath;
