@@ -52,12 +52,17 @@ async function downloadDodaApplicants(page) {
   // 手順10: 日付を両方とも当日に変更
   // 実画面のcodegen記録で確認済み: 独自のカレンダーウィジェット。
   // 入力欄をクリックするとカレンダーが開き、当日の日付リンクをクリックする。
+  // ページ遷移直後は#loadingOverlayが残っていることがあるため待ってから操作する
   // TODO(要確認): 1桁の日付(1〜9日)がカレンダー上でゼロ埋め表示されるかは未確認
+  await page
+    .locator('#loadingOverlay')
+    .waitFor({ state: 'hidden', timeout: 15000 })
+    .catch(() => {});
   const todayDay = String(new Date().getDate());
   await page.locator('#applicationFromDateInputId').click();
-  await page.getByRole('link', { name: todayDay, exact: true }).click();
+  await page.getByRole('link', { name: todayDay, exact: true }).click({ timeout: 15000 });
   await page.locator('#applicationToDateInputId').click();
-  await page.getByRole('link', { name: todayDay, exact: true }).click();
+  await page.getByRole('link', { name: todayDay, exact: true }).click({ timeout: 15000 });
   console.log(`[doda] 日付を本日(${todayDay}日)に設定しました`);
 
   // 手順11: 「この条件で検索」をクリック（buttonではなくlink）
