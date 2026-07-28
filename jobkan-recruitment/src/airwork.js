@@ -47,9 +47,10 @@ async function downloadAirworkApplicants(page) {
   console.log(`[AirWORK] CSVを保存しました: ${targetPath}`);
 
   // 手順4: ログアウト
-  // TODO(要確認): ログアウト導線（ヘッダーのアカウントメニュー配下など）は実画面で要確認
-  await page.getByRole('button', { name: /アカウント|メニュー/ }).click();
-  await page.getByRole('link', { name: 'ログアウト' }).click();
+  // 実画面で確認済み: 右上のアカウントメニューには「ユーザー情報」しか無く、
+  // ログアウトは左上の「weeare」（Air ID共通のアカウント切替メニュー）から行う
+  await page.getByText('weeare', { exact: true }).click();
+  await page.getByRole('button', { name: /ログアウト/ }).click();
   console.log('[AirWORK] ログアウトしました');
 
   return targetPath;
