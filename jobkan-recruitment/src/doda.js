@@ -12,6 +12,9 @@ const config = require('./config');
  * 基づいて実装している（doda CONNECTは独自のカレンダー/チェックボックス/
  * ドロップダウンウィジェットを使っており、ネイティブ要素ではない）。
  * 手順14（ログアウト）のみ未検証（TODO(要確認)）。
+ *
+ * 本日の応募が0件の日もあり得るため、その場合はCSV出力をスキップして
+ * null を返す（ログアウトは行う）。
  */
 async function downloadDodaApplicants(page) {
   console.log('[doda] ログインページへ移動します');
@@ -53,25 +56,41 @@ async function downloadDodaApplicants(page) {
   await page.getByRole('link', { name: 'この条件で検索' }).click();
   console.log('[doda] 検索を実行しました');
 
-  // 手順12: 検索結果上部のチェックボックスを選択
-  // 実画面で確認済み: Infragistics製の独自チェックボックスウィジェット
-  await page.locator('.ui-igcheckbox-normal-off').first().click();
-
-  // 手順13: プルダウンを「応募者情報をCSV出力する」にして実行
-  // 実画面で確認済み: ネイティブのselectではなく、クリックで開く独自ドロップダウン
-  await page.getByText('一括操作 キャリアシートを見る 応募者情報をCSV').first().click();
-  await page.getByText('応募者情報をCSV出力する').first().click();
-
-  const [download] = await Promise.all([
-    page.waitForEvent('download'),
-    // 「実行」もbuttonではなくlink
-    page.getByRole('link', { name: '実行' }).first().click(),
+  // 本日の応募が0件の日もあり得るため、「該当する応募者情報はありません」
+  // （0件時のメッセージ）と、検索結果ありの場合に出るチェックボックスの
+  // どちらが先に表示されるかで判定する
+  const noResultsLocator = page.getByText('該当する応募者情報はありません').first();
+  const resultsCheckboxLocator = page.locator('.ui-igcheckbox-normal-off').first();
+  const outcome = await Promise.race([
+    noResultsLocator.waitFor({ state: 'visible', timeout: 20000 }).then(() => 'empty'),
+    resultsCheckboxLocator.waitFor({ state: 'visible', timeout: 20000 }).then(() => 'has-results'),
   ]);
 
-  // 手順15〜17: 目的のファイル名・格納先に直接保存
-  const targetPath = path.join(config.applicantListDir, '応募者リスト(doda).csv');
-  await download.saveAs(targetPath);
-  console.log(`[doda] CSVを保存しました: ${targetPath}`);
+  let targetPath = null;
+
+  if (outcome === 'empty') {
+    console.log('[doda] 本日分の応募者は0件でした。CSV出力をスキップします。');
+  } else {
+    // 手順12: 検索結果上部のチェックボックスを選択
+    // 実画面で確認済み: Infragistics製の独自チェックボックスウィジェット
+    await resultsCheckboxLocator.click();
+
+    // 手順13: プルダウンを「応募者情報をCSV出力する」にして実行
+    // 実画面で確認済み: ネイティブのselectではなく、クリックで開く独自ドロップダウン
+    await page.getByText('一括操作 キャリアシートを見る 応募者情報をCSV').first().click();
+    await page.getByText('応募者情報をCSV出力する').first().click();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      // 「実行」もbuttonではなくlink
+      page.getByRole('link', { name: '実行' }).first().click(),
+    ]);
+
+    // 手順15〜17: 目的のファイル名・格納先に直接保存
+    targetPath = path.join(config.applicantListDir, '応募者リスト(doda).csv');
+    await download.saveAs(targetPath);
+    console.log(`[doda] CSVを保存しました: ${targetPath}`);
+  }
 
   // 手順14: ログアウト
   // TODO(要確認): ログアウト導線は実画面で要確認（AirWORKと同様に、右上の

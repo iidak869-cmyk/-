@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const config = require('./config');
@@ -93,13 +94,19 @@ async function reflectAirworkAndDoda({
   referenceDate = new Date(),
 } = {}) {
   const airworkRecords = filterWithinLast24Hours(parseAirworkCsv(airworkCsvPath), referenceDate);
-  const dodaRecords = filterWithinLast24Hours(parseDodaCsv(dodaCsvPath), referenceDate);
-
   const airworkCount = await appendApplicantsToReflectExcel(excelPath, airworkRecords);
   console.log(`[反映] AirWORKの直近24時間の応募者 ${airworkCount}件を追記しました`);
 
-  const dodaCount = await appendApplicantsToReflectExcel(excelPath, dodaRecords);
-  console.log(`[反映] dodaの直近24時間の応募者 ${dodaCount}件を追記しました`);
+  // dodaは本日の応募が0件の日、CSV自体が出力されない（doda.js参照）ため、
+  // ファイルが存在しない場合はスキップする
+  let dodaCount = 0;
+  if (fs.existsSync(dodaCsvPath)) {
+    const dodaRecords = filterWithinLast24Hours(parseDodaCsv(dodaCsvPath), referenceDate);
+    dodaCount = await appendApplicantsToReflectExcel(excelPath, dodaRecords);
+    console.log(`[反映] dodaの直近24時間の応募者 ${dodaCount}件を追記しました`);
+  } else {
+    console.log('[反映] doda CSVが見つからないため、doda分の転記をスキップしました（本日0件だった可能性があります）');
+  }
 
   return { airworkCount, dodaCount };
 }
