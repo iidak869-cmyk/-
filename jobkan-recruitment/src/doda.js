@@ -32,13 +32,20 @@ async function downloadDodaApplicants(page) {
 
   // 手順9: 「doda 求人情報」サービスを選択
   // 実画面のcodegen記録で確認済み: サービス選択パネルをクリックした後、
-  // 「求人情報サービス」という画像リンクをクリックする2段階の操作
+  // 「求人情報サービス」という画像リンクをクリックする2段階の操作。
+  // ログイン直後は #loadingOverlay がクリックを妨げ、リトライ+遷移待ちの
+  // 合計がデフォルトの30秒を超えることがあるため、オーバーレイが消えるのを
+  // 待ってからクリックし、タイムアウトも伸ばす。
+  await page
+    .locator('#loadingOverlay')
+    .waitFor({ state: 'hidden', timeout: 30000 })
+    .catch(() => {});
   await page
     .locator(
       '.servicePanel_box.servicePanel_box_SelectServiceMode_Panel_Mode1 > .servicePanel_box_flame > .servicePanel_detail'
     )
-    .click();
-  await page.getByRole('img', { name: '求人情報サービス' }).click();
+    .click({ timeout: 60000 });
+  await page.getByRole('img', { name: '求人情報サービス' }).click({ timeout: 60000 });
   console.log('[doda] 求人情報ページへ遷移しました');
 
   // 手順10: 日付を両方とも当日に変更
