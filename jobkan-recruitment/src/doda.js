@@ -98,9 +98,10 @@ async function downloadDodaApplicants(page) {
 
   // 手順14: ログアウト
   // 実画面で確認済み: 右上の会社名（株式会社Weプラス）をクリックするとメニューが開き、
-  // 「ログアウト」が表示される。button/link roleではない可能性があるためテキストで指定
-  await page.getByText('株式会社Weプラス', { exact: true }).first().click();
-  await page.getByText('ログアウト', { exact: true }).first().click();
+  // 「ログアウト」が表示される。button/link roleではない可能性があるためテキストで指定。
+  // 全角/半角の表記ゆれに対応するため正規表現で「We」部分をワイルドカードにする
+  await page.getByText(/株式会社.*プラス/).first().click();
+  await page.getByText('ログアウト').first().click();
   console.log('[doda] ログアウトしました');
 
   return targetPath;
