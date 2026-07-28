@@ -17,7 +17,8 @@ async function downloadAirworkApplicants(page) {
   console.log('[AirWORK] ログインページへ移動します');
   // 'load'（既定値）はSSOのリダイレクトページ等で完了しないことがあるため
   // 'domcontentloaded' を使う。要素の待機は各locatorの自動待機に任せる。
-  await page.goto(config.airwork.loginUrl, { waitUntil: 'domcontentloaded' });
+  // SSO経由のリダイレクトが重い日があるため、既定の30秒より長めに設定する
+  await page.goto(config.airwork.loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
   // 実画面で確認済み: AirIDログイン画面はlabelが無くplaceholderのみで入力欄を識別する
   await page.getByPlaceholder('AirIDまたはメールアドレス').fill(config.airwork.id());
