@@ -15,21 +15,20 @@ const config = require('./config');
  */
 async function downloadAirworkApplicants(page) {
   console.log('[AirWORK] ログインページへ移動します');
-  await page.goto(config.airwork.loginUrl);
+  // 'load'（既定値）はSSOのリダイレクトページ等で完了しないことがあるため
+  // 'domcontentloaded' を使う。要素の待機は各locatorの自動待機に任せる。
+  await page.goto(config.airwork.loginUrl, { waitUntil: 'domcontentloaded' });
 
   // 実画面で確認済み: AirIDログイン画面はlabelが無くplaceholderのみで入力欄を識別する
   await page.getByPlaceholder('AirIDまたはメールアドレス').fill(config.airwork.id());
   await page.getByPlaceholder('パスワード').fill(config.airwork.password());
   await page.getByRole('button', { name: 'ログイン' }).click();
-
-  await page.waitForLoadState('networkidle');
   console.log('[AirWORK] ログイン完了');
 
   // 手順2: メニューバーの「応募者」を選択
   // 実画面で確認済み: exact指定が無いと「応募者を管理する」等の他リンクにも
   // 部分一致してしまうため、exact: true で完全一致のメニューリンクに絞る
   await page.getByRole('link', { name: '応募者', exact: true }).click();
-  await page.waitForLoadState('networkidle');
   console.log('[AirWORK] 応募者ページへ遷移しました');
 
   // 手順3: 最下部の「応募者一覧をダウンロード」ボタンを選択し、ダウンロードを捕捉

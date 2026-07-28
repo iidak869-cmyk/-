@@ -22,18 +22,18 @@ function formatToday() {
  */
 async function downloadDodaApplicants(page) {
   console.log('[doda] ログインページへ移動します');
-  await page.goto(config.doda.loginUrl);
+  // 'load'（既定値）はSSOのリダイレクトページ等で完了しないことがあるため
+  // 'domcontentloaded' を使う。要素の待機は各locatorの自動待機に任せる。
+  await page.goto(config.doda.loginUrl, { waitUntil: 'domcontentloaded' });
 
   // TODO(要確認): ID/パスワード欄のラベルは実画面で要確認
   await page.getByLabel(/ID|ユーザー名/).fill(config.doda.id());
   await page.getByLabel(/パスワード/).fill(config.doda.password());
   await page.getByRole('button', { name: /ログイン/ }).click();
-  await page.waitForLoadState('networkidle');
   console.log('[doda] ログイン完了');
 
   // 手順9: メニュー欄の「doda 求人情報」を選択
   await page.getByRole('link', { name: 'doda 求人情報' }).click();
-  await page.waitForLoadState('networkidle');
   console.log('[doda] 求人情報ページへ遷移しました');
 
   // 手順10: 日付を両方とも当日に変更
@@ -46,7 +46,6 @@ async function downloadDodaApplicants(page) {
 
   // 手順11: 「この条件で検索」をクリック
   await page.getByRole('button', { name: 'この条件で検索' }).click();
-  await page.waitForLoadState('networkidle');
   console.log('[doda] 検索を実行しました');
 
   // 手順12: 検索結果上部のチェックボックスを選択（全選択チェックボックスを想定）
