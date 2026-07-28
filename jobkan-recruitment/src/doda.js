@@ -26,10 +26,11 @@ async function downloadDodaApplicants(page) {
   // 'domcontentloaded' を使う。要素の待機は各locatorの自動待機に任せる。
   await page.goto(config.doda.loginUrl, { waitUntil: 'domcontentloaded' });
 
-  // TODO(要確認): ID/パスワード欄のラベルは実画面で要確認
-  await page.getByLabel(/ID|ユーザー名/).fill(config.doda.id());
-  await page.getByLabel(/パスワード/).fill(config.doda.password());
-  await page.getByRole('button', { name: /ログイン/ }).click();
+  // 実画面で確認済み: doda CONNECTのログイン画面は「メールアドレス」「パスワード」
+  // ラベル、ボタンは「同意してログイン」
+  await page.getByLabel('メールアドレス').fill(config.doda.id());
+  await page.getByLabel('パスワード').fill(config.doda.password());
+  await page.getByRole('button', { name: '同意してログイン' }).click();
   console.log('[doda] ログイン完了');
 
   // 手順9: メニュー欄の「doda 求人情報」を選択
