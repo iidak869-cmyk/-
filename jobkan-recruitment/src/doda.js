@@ -29,7 +29,8 @@ async function downloadDodaApplicants(page) {
   // 実画面で確認済み: doda CONNECTのログイン画面は「メールアドレス」「パスワード」
   // ラベル、ボタンは「同意してログイン」
   await page.getByLabel('メールアドレス').fill(config.doda.id());
-  await page.getByLabel('パスワード').fill(config.doda.password());
+  // exact指定が無いと「パスワードを表示する」ボタンにも部分一致してしまうため exact: true
+  await page.getByLabel('パスワード', { exact: true }).fill(config.doda.password());
   await page.getByRole('button', { name: '同意してログイン' }).click();
   console.log('[doda] ログイン完了');
 
