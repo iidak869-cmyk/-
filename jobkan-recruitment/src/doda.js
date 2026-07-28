@@ -60,9 +60,9 @@ async function downloadDodaApplicants(page) {
     .catch(() => {});
   const todayDay = String(new Date().getDate());
   await page.locator('#applicationFromDateInputId').click();
-  await page.getByRole('link', { name: todayDay, exact: true }).click({ timeout: 15000 });
+  await page.getByRole('link', { name: todayDay, exact: true }).click({ timeout: 30000 });
   await page.locator('#applicationToDateInputId').click();
-  await page.getByRole('link', { name: todayDay, exact: true }).click({ timeout: 15000 });
+  await page.getByRole('link', { name: todayDay, exact: true }).click({ timeout: 30000 });
   console.log(`[doda] 日付を本日(${todayDay}日)に設定しました`);
 
   // 手順11: 「この条件で検索」をクリック（buttonではなくlink）
