@@ -34,8 +34,10 @@ async function downloadDodaApplicants(page) {
   await page.getByRole('button', { name: '同意してログイン' }).click();
   console.log('[doda] ログイン完了');
 
-  // 手順9: メニュー欄の「doda 求人情報」を選択
-  await page.getByRole('link', { name: 'doda 求人情報' }).click();
+  // 手順9: 「利用サービス」一覧内の「doda 求人情報」を選択
+  // 実画面で確認済み: カード全体がリンクになっており、アクセシブルネームが
+  // 説明文まで含んで長くなるため、見出しテキストで直接指定する
+  await page.getByText('doda 求人情報', { exact: true }).click();
   console.log('[doda] 求人情報ページへ遷移しました');
 
   // 手順10: 日付を両方とも当日に変更
