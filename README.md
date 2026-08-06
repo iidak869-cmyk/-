@@ -1,3 +1,12 @@
+このリポジトリには2つのGoogle Apps Script (GAS) ツールが入っています。
+
+| ディレクトリ | ツール |
+| --- | --- |
+| `gas/` | アンケートフォーム自動反映（customform.jp → Googleスプレッドシート）… 以下で説明 |
+| `gas-ai-usage/` | [社内AI利用状況の可視化ツール](gas-ai-usage/README.md)（Googleフォーム → ダッシュボード） |
+
+---
+
 # アンケートフォーム自動反映（customform.jp → Googleスプレッドシート）
 
 customform.jp で回答を受け付けている以下の3つのアンケートフォームの回答を、
