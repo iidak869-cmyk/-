@@ -661,7 +661,7 @@ function buildDashboard(ss, stats, settings, range, totalRowCount) {
     ['最も多い用途', stats.topPurpose],
     ['未申告のメンバー', stats.notReported.length > 0 ? stats.notReported.join('、') : 'なし（全員が申告済み）'],
     [
-      '`設定` シートに未登録の回答者',
+      '設定シートに未登録の回答者',
       stats.unknownRespondents.length > 0 ? stats.unknownRespondents.join('、') : 'なし'
     ]
   ];
@@ -684,14 +684,16 @@ function buildDashboard(ss, stats, settings, range, totalRowCount) {
       .setFontColor('#b06000');
   }
 
+  // グラフはそれぞれ縦軸の単位を1つ（人／件／時間）に揃える。単位の違う系列を
+  // 同じ軸に並べると読み間違いのもとになるため、混在させない。
   var toolRows = countRows(ss, SHEET.BY_TOOL);
   if (toolRows > 0) {
     var toolSheet = ss.getSheetByName(SHEET.BY_TOOL);
     insertChart(
       sheet,
-      Charts.ChartType.COLUMN,
-      [toolSheet.getRange(1, 1, toolRows + 1, 2), toolSheet.getRange(1, 3, toolRows + 1, 1)],
-      'ツール別の利用状況（申告件数・利用人数）',
+      Charts.ChartType.BAR,
+      [toolSheet.getRange(1, 1, toolRows + 1, 1), toolSheet.getRange(1, 3, toolRows + 1, 1)],
+      'ツール別の利用人数（何人が使っているか）',
       4,
       4
     );
@@ -716,8 +718,8 @@ function buildDashboard(ss, stats, settings, range, totalRowCount) {
     insertChart(
       sheet,
       Charts.ChartType.LINE,
-      [weekSheet.getRange(1, 1, weekRows + 1, 1), weekSheet.getRange(1, 3, weekRows + 1, 3)],
-      '週次推移（申告人数・利用時間・削減時間）',
+      [weekSheet.getRange(1, 1, weekRows + 1, 1), weekSheet.getRange(1, 4, weekRows + 1, 2)],
+      '週次推移（利用時間・削減時間の合計・h）',
       22,
       4
     );
@@ -728,9 +730,9 @@ function buildDashboard(ss, stats, settings, range, totalRowCount) {
     var memberSheet = ss.getSheetByName(SHEET.BY_MEMBER);
     insertChart(
       sheet,
-      Charts.ChartType.COLUMN,
+      Charts.ChartType.BAR,
       [memberSheet.getRange(1, 1, memberRows + 1, 1), memberSheet.getRange(1, 4, memberRows + 1, 2)],
-      'メンバー別の利用時間・削減時間(h)',
+      'メンバー別の利用時間・削減時間（h）',
       22,
       11
     );
